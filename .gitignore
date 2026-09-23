@@ -1,0 +1,41 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Credentials & User-specific settings (contains portal username, password & OTP)
+user_settings.json
+*.tmp
+.test_write.tmp
+
+# PyInstaller / Build Artifacts
+build/
+dist/
+*.spec
+*.exe
+
+# Excel data files and Office lock files
+~$*.xlsx
+*.xlsx
+*.xls
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+
+# Editor & IDE settings
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Logs
+*.log
+
+# OS generated files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
