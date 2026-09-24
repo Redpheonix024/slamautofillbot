@@ -99,30 +99,85 @@ def parse_excel_bookings(file_path: str) -> Dict[str, Any]:
                     if not loco_number:
                         loco_number = extract_loco_from_text(val_s)
                         
-        # Check for column headers (e.g. S.No, BOOKINGS, SECTION)
-        for c, val in enumerate(row_vals, start=1):
-            if val is not None:
-                s = str(val).strip().upper()
-                if s in ["S.NO.", "S.NO", "SNO", "SL.NO", "SL NO"]:
-                    col_sno = c
-                    header_row_idx = r
-                elif any(kw in s for kw in ["BOOKING", "DESCRIPTION", "DEFECT", "OBSERVATION"]):
-                    col_desc = c
-                elif "SECTION" in s:
-                    col_sec = c
+        # Check if this row looks like the table header row
+        r_sno = None
+        r_desc = None
+        r_sec = None
 
-        if col_sno and col_desc and col_sec:
+        for c, val in enumerate(row_vals, start=1):
+            if val is None:
+                continue
+            v_str = str(val).strip()
+            v_clean = re.sub(r'[^A-Z0-9]', '', v_str.upper())
+
+            # Match S.No variations: 'SL. NO', 'SL.NO', 'SL NO', 'S.NO', 'SNO', 'SR. NO', 'SERIAL NO', 'NO'
+            if v_clean in {'SNO', 'SLNO', 'SRNO', 'SERIALNO', 'NO'} or v_clean.startswith(('SLNO', 'SRNO', 'SNO')):
+                r_sno = c
+            # Match Section header
+            elif 'SECTION' in v_clean:
+                r_sec = c
+            # Match Description header (skip titles with loco numbers or long working banners)
+            elif any(kw in v_clean for kw in ['BOOKING', 'DESCRIPTION', 'DEFECT', 'OBSERVATION', 'REMARK', 'PARTICULAR']):
+                if len(v_str) < 30 and not any(k in v_str.upper() for k in ['WORKING', 'PANTO', 'TFP', 'UNDER', 'LOCO']):
+                    r_desc = c
+
+        if (r_sno and r_desc) or (r_sno and r_sec) or (r_desc and r_sec):
+            header_row_idx = r
+            if r_sno: col_sno = r_sno
+            if r_desc: col_desc = r_desc
+            if r_sec: col_sec = r_sec
             break
 
-    # Fallback column defaults if not strictly identified
+    # Fallback 1: Scan for numeric S.No sequence (1, 2, 3...) if col_sno not identified
+    if col_sno is None:
+        for c in range(1, min(sheet.max_column + 1, 10)):
+            for r in range(1, min(sheet.max_row, 12)):
+                val1 = sheet.cell(row=r, column=c).value
+                val2 = sheet.cell(row=r+1, column=c).value
+                try:
+                    if int(float(str(val1).strip())) == 1 and int(float(str(val2).strip())) == 2:
+                        col_sno = c
+                        if header_row_idx is None:
+                            header_row_idx = r - 1
+                        break
+                except Exception:
+                    pass
+            if col_sno:
+                break
+
+    # Fallback 2: Infer missing col_desc or col_sec from first data row
+    if header_row_idx and (col_desc is None or col_sec is None):
+        data_row = header_row_idx + 1
+        for c in range(1, min(sheet.max_column + 1, 10)):
+            if c == col_sno:
+                continue
+            v = str(sheet.cell(row=data_row, column=c).value or '').strip()
+            if not v:
+                continue
+            if any(sec in v.upper() for sec in KNOWN_SECTIONS) and len(v) < 15 and col_sec is None:
+                col_sec = c
+            elif len(v) > 8 and col_desc is None:
+                col_desc = c
+
+    # Ultimate fallback defaults
     if header_row_idx is None:
         header_row_idx = 3
     if col_sno is None:
-        col_sno = 2
+        col_sno = 1
     if col_desc is None:
-        col_desc = 3
+        col_desc = 2
     if col_sec is None:
-        col_sec = 4
+        col_sec = 3
+
+    # Ensure no column index collisions
+    if col_sno == col_desc or col_desc == col_sec or col_sno == col_sec:
+        if col_sno == 1:
+            col_desc = 2
+            col_sec = 3
+        else:
+            col_sno = 2
+            col_desc = 3
+            col_sec = 4
 
     # Extract schedule type if detectable in title or filename
     schedule = ""

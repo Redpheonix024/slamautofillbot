@@ -53,6 +53,7 @@ def build():
         "--hidden-import=slam_bot",
         "--hidden-import=gui",
         "--hidden-import=config",
+        "--hidden-import=updater",
     ]
 
     print(f"\nRunning PyInstaller command:\n{' '.join(cmd)}\n")
@@ -64,6 +65,13 @@ def build():
 
     exe_path = os.path.join(dist_dir, "SLAM_Auto_Filler.exe")
     if os.path.exists(exe_path):
+        root_exe = os.path.join(base_dir, "SLAM_Auto_Filler.exe")
+        try:
+            shutil.copy2(exe_path, root_exe)
+            print(f"Copied to project root: {root_exe}")
+        except Exception as e:
+            print(f"Warning: Could not copy to root: {e}")
+
         size_mb = os.path.getsize(exe_path) / (1024 * 1024)
         print("\n" + "=" * 60)
         print("BUILD SUCCESSFUL!")

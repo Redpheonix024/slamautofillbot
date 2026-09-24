@@ -2,14 +2,19 @@
 SLAM Jobcard Auto-Filler Configuration
 """
 import os
+import sys
+import json
+from datetime import datetime
+
+# Application Version & GitHub Releases
+APP_VERSION = "1.0.0"
+GITHUB_REPO = "Redpheonix024/slamautofillbot"
+GITHUB_RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 
 BASE_URL = "https://slam.indianrail.gov.in/SLAM"
 LOGIN_URL = f"{BASE_URL}/Login.aspx"
 JOBCARD_CREATE_URL = f"{BASE_URL}/JobSchedules/JobcardCreate.aspx"
-
-import sys
-import json
-from datetime import datetime
 
 def get_settings_file_path() -> str:
     """

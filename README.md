@@ -52,10 +52,17 @@ An automated desktop application designed for Indian Railways Electric Locomotiv
   - Resilient single-threaded worker eliminates Playwright greenlet and asyncio event loop conflicts.
   - Interrupted navigation protection: automatically waits for server postbacks and redirects (e.g. `SendJobcards.aspx?Type=1`) to settle before navigating.
 
-- **Intelligent Excel Parser**:
-  - Auto-scans Desktop and dated subfolders (e.g. `Desktop\21-09-2026\`) for `.xlsx` booking files.
-  - Extracts Locomotive numbers (e.g. `30389`, `37229`), Schedules (`IA`, `IB`, `GC`, `ET`), and Dates.
-  - Normalizes single sections and multi-section strings (e.g. `E3A & E5A`, `M1 / M2`, `E8 / E4`, `E4/E5B`).
+- **Automatic GitHub Updates & Version Checking**:
+  - Automatically queries GitHub Releases for updates on application startup.
+  - Interactive **Update Dialog** displays what's new (release notes/changelog) with one-click download.
+  - In-app progress indicator and automatic launch of the latest version.
+  - Manual **"🔄 Check Updates"** button available in the top banner.
+
+- **Intelligent Excel Parser & Telegram Desktop Integration**:
+  - Auto-scans Desktop, `Downloads\Telegram Desktop`, and `Downloads` folders for `.xlsx` booking files.
+  - Extracts Locomotive numbers (e.g. `30389`, `37229`, `37827`), Schedules (`IA`, `IB`, `GC`, `IC`, `ET`), and Dates.
+  - Normalizes single sections and multi-section strings (e.g. `E3A & E5A`, `M1 / M2`, `E8 / E4`, `E4/E5B`, `BRS`).
+  - Resilient against variations in headers (`SL. NO`, `S.NO`, `SR. NO`) and title banner collision.
 
 ---
 

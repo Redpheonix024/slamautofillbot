@@ -19,10 +19,211 @@ from datetime import datetime
 from typing import Optional
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+import webbrowser
 
 import config
+import updater
 from excel_parser import parse_excel_bookings
 from slam_bot import SLAMBot
+
+class UpdateDialog(tk.Toplevel):
+    """
+    Dedicated dialog for reviewing release details, changelog,
+    and downloading/installing the latest version.
+    """
+    def __init__(self, parent, update_info: dict):
+        super().__init__(parent)
+        self.transient(parent)
+        latest_v = update_info.get("latest_version", "--")
+        self.title(f"🚀 SLAM Auto-Filler Update Available - v{latest_v}")
+        self.geometry("660x520")
+        self.minsize(580, 440)
+        self.update_info = update_info
+        self._download_thread = None
+        self._cancel_download = False
+        self._downloaded_file = ""
+
+        self._build_ui()
+
+        # Center on parent window
+        self.update_idletasks()
+        try:
+            px = parent.winfo_rootx() + (parent.winfo_width() - self.winfo_width()) // 2
+            py = parent.winfo_rooty() + (parent.winfo_height() - self.winfo_height()) // 2
+            self.geometry(f"+{max(0, px)}+{max(0, py)}")
+        except Exception:
+            pass
+
+        self.grab_set()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _build_ui(self):
+        banner = tk.Frame(self, bg="#1a365d", height=60)
+        banner.pack(fill=tk.X, side=tk.TOP)
+
+        latest_v = self.update_info.get("latest_version", "--")
+        curr_v = self.update_info.get("current_version", config.APP_VERSION)
+        rel_name = self.update_info.get("release_name", f"Release v{latest_v}")
+
+        tk.Label(
+            banner,
+            text=f"🚀 New Update Available: v{latest_v}",
+            font=("Segoe UI", 14, "bold"),
+            fg="white",
+            bg="#1a365d"
+        ).pack(anchor=tk.W, padx=16, pady=(8, 2))
+
+        tk.Label(
+            banner,
+            text=f"Current installed: v{curr_v}  •  {rel_name}",
+            font=("Segoe UI", 9),
+            fg="#90cdf4",
+            bg="#1a365d"
+        ).pack(anchor=tk.W, padx=16, pady=(0, 8))
+
+        content = ttk.Frame(self, padding=12)
+        content.pack(fill=tk.BOTH, expand=True)
+
+        # Release Notes / Changelog
+        notes_frame = ttk.LabelFrame(content, text=" Release Notes & Changelog ", padding=8)
+        notes_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+
+        notes_txt = tk.Text(notes_frame, wrap=tk.WORD, font=("Segoe UI", 9), height=10, relief=tk.SOLID, borderwidth=1)
+        notes_sb = ttk.Scrollbar(notes_frame, orient=tk.VERTICAL, command=notes_txt.yview)
+        notes_txt.configure(yscrollcommand=notes_sb.set)
+
+        notes_body = self.update_info.get("release_notes", "") or "No release notes provided."
+        notes_txt.insert(tk.END, notes_body)
+        notes_txt.config(state=tk.DISABLED)
+
+        notes_sb.pack(side=tk.RIGHT, fill=tk.Y)
+        notes_txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Download / Asset Status Frame
+        status_frame = ttk.LabelFrame(content, text=" Download Status ", padding=8)
+        status_frame.pack(fill=tk.X, pady=(0, 10))
+
+        asset_name = self.update_info.get("asset_name", "SLAM_Auto_Filler.exe")
+        asset_size = self.update_info.get("asset_size_mb", 0.0)
+        size_str = f"({asset_size:.1f} MB)" if asset_size > 0 else ""
+
+        self.asset_lbl = ttk.Label(
+            status_frame,
+            text=f"Package: {asset_name} {size_str}",
+            font=("Segoe UI", 9, "bold")
+        )
+        self.asset_lbl.pack(anchor=tk.W, pady=(0, 4))
+
+        self.progress_bar = ttk.Progressbar(status_frame, mode="determinate")
+        self.progress_bar.pack(fill=tk.X, pady=(0, 4))
+
+        self.status_detail_lbl = ttk.Label(
+            status_frame,
+            text="Ready to download and install.",
+            font=("Segoe UI", 8)
+        )
+        self.status_detail_lbl.pack(anchor=tk.W)
+
+        # Buttons Frame
+        btn_frame = ttk.Frame(content)
+        btn_frame.pack(fill=tk.X, side=tk.BOTTOM)
+
+        self.action_btn = ttk.Button(
+            btn_frame,
+            text="📥 Download & Update",
+            command=self._start_download
+        )
+        self.action_btn.pack(side=tk.LEFT, padx=(0, 8))
+
+        github_btn = ttk.Button(
+            btn_frame,
+            text="🌐 View on GitHub",
+            command=lambda: webbrowser.open(self.update_info.get("release_url", config.GITHUB_RELEASES_URL))
+        )
+        github_btn.pack(side=tk.LEFT, padx=(0, 8))
+
+        self.close_btn = ttk.Button(
+            btn_frame,
+            text="Cancel",
+            command=self._on_close
+        )
+        self.close_btn.pack(side=tk.RIGHT)
+
+    def _start_download(self):
+        download_url = self.update_info.get("download_url")
+        if not download_url or not download_url.startswith("http"):
+            webbrowser.open(self.update_info.get("release_url", config.GITHUB_RELEASES_URL))
+            return
+
+        latest_v = self.update_info.get("latest_version", "new")
+        downloads_dir = os.path.join(os.path.expanduser("~"), "Downloads")
+        if not os.path.exists(downloads_dir):
+            downloads_dir = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
+
+        dest_file = os.path.join(downloads_dir, f"SLAM_Auto_Filler_v{latest_v}.exe")
+        self._downloaded_file = dest_file
+
+        self.action_btn.config(state=tk.DISABLED, text="Downloading...")
+        self.progress_bar["value"] = 0
+        self.status_detail_lbl.config(text="Starting download from GitHub...")
+
+        def _do_download():
+            try:
+                def _prog(dl, total, pct):
+                    def _update_ui():
+                        self.progress_bar["value"] = pct
+                        mb_dl = dl / (1024 * 1024)
+                        mb_tot = total / (1024 * 1024)
+                        self.status_detail_lbl.config(
+                            text=f"Downloading: {mb_dl:.1f} MB / {mb_tot:.1f} MB ({pct:.1f}%)"
+                        )
+                    self.after(0, _update_ui)
+
+                success = updater.download_update_asset(
+                    download_url,
+                    dest_file,
+                    progress_callback=_prog,
+                    cancel_check=lambda: self._cancel_download
+                )
+
+                if success:
+                    def _on_success():
+                        self.progress_bar["value"] = 100
+                        self.status_detail_lbl.config(
+                            text=f"✅ Download complete!\nSaved to: {dest_file}"
+                        )
+                        self.action_btn.config(
+                            state=tk.NORMAL,
+                            text="🚀 Launch New Version",
+                            command=self._launch_downloaded
+                        )
+                        self.close_btn.config(text="Close")
+                    self.after(0, _on_success)
+                else:
+                    def _on_abort():
+                        self.status_detail_lbl.config(text="Download cancelled.")
+                        self.action_btn.config(state=tk.NORMAL, text="📥 Download & Update")
+                    self.after(0, _on_abort)
+
+            except Exception as e:
+                def _on_err(err_str=str(e)):
+                    self.status_detail_lbl.config(text=f"❌ Download failed: {err_str}")
+                    self.action_btn.config(state=tk.NORMAL, text="Retry Download")
+                self.after(0, _on_err)
+
+        self._download_thread = threading.Thread(target=_do_download, daemon=True)
+        self._download_thread.start()
+
+    def _launch_downloaded(self):
+        if self._downloaded_file and os.path.exists(self._downloaded_file):
+            try:
+                updater.launch_updated_executable(self._downloaded_file)
+            except Exception as e:
+                messagebox.showerror("Launch Error", f"Could not launch new version:\n{e}")
+
+    def _on_close(self):
+        self._cancel_download = True
+        self.destroy()
 
 class VerificationDialog(tk.Toplevel):
     """
@@ -552,7 +753,7 @@ class SLAMBotWorker(threading.Thread):
 class SLAMAutoFillerGUI:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("SLAM Jobcard Auto-Filler - Indian Railways (ELS/RPME)")
+        self.root.title(f"SLAM Jobcard Auto-Filler v{config.APP_VERSION} - Indian Railways (ELS/RPME)")
         self.root.geometry("1040x840")
         self.root.minsize(940, 680)
 
@@ -565,6 +766,7 @@ class SLAMAutoFillerGUI:
 
         self.current_excel_path = ""
         self.parsed_data = None
+        self.update_info = None
 
         # Load credentials from config / user_settings
         saved_u, saved_p = config.get_credentials()
@@ -583,6 +785,9 @@ class SLAMAutoFillerGUI:
         self._scan_desktop_files()
         self.root.protocol("WM_DELETE_WINDOW", self._on_app_close)
 
+        # Check for updates in background
+        self.root.after(1500, self._check_update_startup)
+
     def _build_ui(self):
         # ── Header Banner ───────────────────────────────────────────────────────
         header_frame = tk.Frame(self.root, bg="#1a365d", height=70)
@@ -600,6 +805,36 @@ class SLAMAutoFillerGUI:
         subtitle_frame = tk.Frame(header_frame, bg="#1a365d")
         subtitle_frame.pack(side=tk.RIGHT, padx=16, pady=10)
 
+        # Version badge & Manual update check
+        sub_top = tk.Frame(subtitle_frame, bg="#1a365d")
+        sub_top.pack(anchor=tk.E, pady=(0, 2))
+
+        self.update_btn = tk.Button(
+            sub_top,
+            text="🔄 Check Updates",
+            font=("Segoe UI", 8),
+            fg="#1a365d",
+            bg="#e2e8f0",
+            activebackground="#cbd5e0",
+            relief=tk.FLAT,
+            padx=6,
+            pady=1,
+            cursor="hand2",
+            command=self._on_manual_check_update
+        )
+        self.update_btn.pack(side=tk.RIGHT, padx=(6, 0))
+
+        ver_lbl = tk.Label(
+            sub_top,
+            text=f"v{config.APP_VERSION}",
+            font=("Segoe UI", 8, "bold"),
+            fg="#e2e8f0",
+            bg="#2d3748",
+            padx=5,
+            pady=1
+        )
+        ver_lbl.pack(side=tk.RIGHT)
+
         tk.Label(
             subtitle_frame,
             text="ELS/RPME Royapuram Shed Edition",
@@ -616,9 +851,63 @@ class SLAMAutoFillerGUI:
             bg="#1a365d"
         ).pack(anchor=tk.E)
 
+        # ── Update Alert Banner (Hidden by default, shown when update found) ──────
+        self.update_banner = tk.Frame(self.root, bg="#2b6cb0", pady=6, padx=14)
+        self.update_banner_lbl = tk.Label(
+            self.update_banner,
+            text="",
+            font=("Segoe UI", 9, "bold"),
+            fg="white",
+            bg="#2b6cb0"
+        )
+        self.update_banner_lbl.pack(side=tk.LEFT)
+
+        close_banner_btn = tk.Button(
+            self.update_banner,
+            text="✕",
+            font=("Segoe UI", 9, "bold"),
+            fg="white",
+            bg="#2b6cb0",
+            activebackground="#2c5282",
+            activeforeground="white",
+            relief=tk.FLAT,
+            cursor="hand2",
+            command=self.update_banner.pack_forget
+        )
+        close_banner_btn.pack(side=tk.RIGHT, padx=(10, 0))
+
+        view_rel_btn = tk.Button(
+            self.update_banner,
+            text="Release Notes",
+            font=("Segoe UI", 8),
+            fg="#1a365d",
+            bg="#ebf8ff",
+            relief=tk.FLAT,
+            cursor="hand2",
+            padx=6,
+            pady=1,
+            command=self._open_release_notes
+        )
+        view_rel_btn.pack(side=tk.RIGHT, padx=4)
+
+        update_now_btn = tk.Button(
+            self.update_banner,
+            text="⚡ Update Now",
+            font=("Segoe UI", 8, "bold"),
+            fg="#1a365d",
+            bg="#feebc8",
+            relief=tk.FLAT,
+            cursor="hand2",
+            padx=8,
+            pady=1,
+            command=self._open_update_dialog
+        )
+        update_now_btn.pack(side=tk.RIGHT, padx=4)
+
         # ── Main Content Container ──────────────────────────────────────────────
         main_container = ttk.Frame(self.root, padding=10)
         main_container.pack(fill=tk.BOTH, expand=True)
+        self.main_container = main_container
 
         # 1. Credentials & Daily OTP Frame
         cred_frame = ttk.LabelFrame(main_container, text=" 🔐 Portal Credentials & Daily OTP ", padding=8)
@@ -659,12 +948,12 @@ class SLAMAutoFillerGUI:
         quick_frame = ttk.Frame(file_frame)
         quick_frame.pack(fill=tk.X, pady=(0, 4))
 
-        ttk.Label(quick_frame, text="Quick Select (Desktop):", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Label(quick_frame, text="Quick Select:", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=(0, 8))
         self.detected_files_cb = ttk.Combobox(quick_frame, state="readonly", width=58, font=("Segoe UI", 9))
         self.detected_files_cb.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
         self.detected_files_cb.bind("<<ComboboxSelected>>", self._on_detected_file_selected)
 
-        scan_btn = ttk.Button(quick_frame, text="🔄 Scan Desktop", command=self._scan_desktop_files)
+        scan_btn = ttk.Button(quick_frame, text="🔄 Scan", command=self._scan_desktop_files)
         scan_btn.pack(side=tk.LEFT)
 
         # Manual path entry
@@ -958,28 +1247,35 @@ class SLAMAutoFillerGUI:
         self.root.after(0, _append)
 
     def _scan_desktop_files(self):
-        """Scans Desktop and immediate subdirectories for .xlsx booking files."""
-        desktop = os.path.expanduser(r"~\Desktop")
-        if not os.path.exists(desktop):
-            return
+        """Scans Desktop, Telegram Desktop, and Downloads for .xlsx booking files."""
+        scan_roots = [
+            (os.path.expanduser(r"~\Desktop"), ""),
+            (os.path.expanduser(r"~\Downloads\Telegram Desktop"), "Telegram"),
+            (os.path.expanduser(r"~\Downloads"), "Downloads"),
+        ]
 
         candidates = []
-        try:
-            for entry in os.scandir(desktop):
-                try:
-                    if entry.is_file() and entry.name.endswith(".xlsx") and not entry.name.startswith("~$"):
-                        if any(kw in entry.name.upper() for kw in ["BOOKING", "LBR", "QAI", "CHECKING"]):
-                            candidates.append((entry.stat().st_mtime, entry.path, entry.name))
-                    elif entry.is_dir() and not entry.name.startswith("."):
-                        for sub in os.scandir(entry.path):
-                            if sub.is_file() and sub.name.endswith(".xlsx") and not sub.name.startswith("~$"):
-                                if any(kw in sub.name.upper() for kw in ["BOOKING", "LBR", "QAI", "CHECKING"]):
-                                    display_name = f"[{entry.name}] {sub.name}"
-                                    candidates.append((sub.stat().st_mtime, sub.path, display_name))
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        for root_dir, prefix in scan_roots:
+            if not os.path.exists(root_dir):
+                continue
+            try:
+                for entry in os.scandir(root_dir):
+                    try:
+                        if entry.is_file() and entry.name.endswith(".xlsx") and not entry.name.startswith("~$"):
+                            if any(kw in entry.name.upper() for kw in ["BOOKING", "LBR", "QAI", "CHECKING"]):
+                                disp = f"[{prefix}] {entry.name}" if prefix else entry.name
+                                candidates.append((entry.stat().st_mtime, entry.path, disp))
+                        elif entry.is_dir() and not entry.name.startswith(".") and not prefix:
+                            # Only scan immediate subdirectories on Desktop to keep scan fast
+                            for sub in os.scandir(entry.path):
+                                if sub.is_file() and sub.name.endswith(".xlsx") and not sub.name.startswith("~$"):
+                                    if any(kw in sub.name.upper() for kw in ["BOOKING", "LBR", "QAI", "CHECKING"]):
+                                        display_name = f"[{entry.name}] {sub.name}"
+                                        candidates.append((sub.stat().st_mtime, sub.path, display_name))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
 
         candidates.sort(reverse=True)
         self._desktop_files = {disp: full_p for _, full_p, disp in candidates}
@@ -990,7 +1286,7 @@ class SLAMAutoFillerGUI:
             self.detected_files_cb.current(0)
             self._on_detected_file_selected()
         else:
-            self.detected_files_cb["values"] = ["(No matching Excel files on Desktop)"]
+            self.detected_files_cb["values"] = ["(No matching Excel files detected)"]
 
     def _on_detected_file_selected(self, event=None):
         selected_name = self.detected_files_cb.get()
@@ -1320,6 +1616,59 @@ class SLAMAutoFillerGUI:
     def _reset_buttons(self):
         self.start_btn.config(state=tk.NORMAL)
         self.stop_btn.config(state=tk.DISABLED)
+
+    # ── Update Checking & Notification Methods ────────────────────────────────
+    def _check_update_startup(self):
+        """Silently checks for updates in the background on startup."""
+        threading.Thread(target=self._run_update_check_silent, daemon=True).start()
+
+    def _run_update_check_silent(self):
+        try:
+            res = updater.check_for_updates(config.APP_VERSION)
+            if res.get("update_available"):
+                self.update_info = res
+                self.root.after(0, lambda: self._show_update_banner(res))
+        except Exception:
+            pass
+
+    def _show_update_banner(self, info: dict):
+        latest = info.get("latest_version", "--")
+        self.update_banner_lbl.config(
+            text=f"🚀 A new version of SLAM Auto-Filler is available: v{latest} (Current: v{config.APP_VERSION})"
+        )
+        if hasattr(self, "main_container"):
+            self.update_banner.pack(fill=tk.X, side=tk.TOP, before=self.main_container)
+
+    def _on_manual_check_update(self):
+        self.update_btn.config(text="⏳ Checking...", state=tk.DISABLED)
+        def _check():
+            res = updater.check_for_updates(config.APP_VERSION)
+            def _done():
+                self.update_btn.config(text="🔄 Check Updates", state=tk.NORMAL)
+                if res.get("update_available"):
+                    self.update_info = res
+                    self._show_update_banner(res)
+                    self._open_update_dialog()
+                elif res.get("success"):
+                    messagebox.showinfo(
+                        "Up to Date",
+                        f"You are running the latest version of SLAM Auto-Filler (v{config.APP_VERSION}).\n\nNo newer version found on GitHub."
+                    )
+                else:
+                    messagebox.showwarning(
+                        "Update Check",
+                        f"Could not check for updates:\n\n{res.get('error', 'Unknown network error')}"
+                    )
+            self.root.after(0, _done)
+        threading.Thread(target=_check, daemon=True).start()
+
+    def _open_release_notes(self):
+        if self.update_info and self.update_info.get("release_url"):
+            webbrowser.open(self.update_info["release_url"])
+
+    def _open_update_dialog(self):
+        if self.update_info:
+            UpdateDialog(self.root, self.update_info)
 
 def main():
     root = tk.Tk()
