@@ -6,6 +6,8 @@ import os
 import sys
 import re
 import json
+import tempfile
+import ctypes
 import urllib.request
 import urllib.error
 import subprocess
@@ -197,14 +199,112 @@ def download_update_asset(
                 pass
         raise e
 
+def get_current_executable_path() -> str:
+    """
+    Returns the absolute path to the active executable,
+    or the project root binary path if running in dev mode.
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.abspath(sys.executable)
+    base = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, "SLAM_Auto_Filler.exe")
+
+def refresh_windows_icon_cache():
+    """
+    Forces Windows Shell / Explorer to refresh its icon cache and thumbnail associations.
+    """
+    try:
+        ctypes.windll.shell32.SHChangeNotify(0x08000000, 0x0000, None, None)  # SHCNE_ASSOCCHANGED
+    except Exception:
+        pass
+    try:
+        subprocess.run(["ie4uinit.exe", "-show"], creationflags=0x08000000 | subprocess.CREATE_NO_WINDOW, check=False)
+    except Exception:
+        pass
+
+def replace_and_restart(staged_exe_path: str, target_exe_path: Optional[str] = None):
+    """
+    Replaces target_exe_path with staged_exe_path in-place once the current process exits,
+    flushes the Windows shell icon cache, and launches the updated executable.
+    """
+    if not target_exe_path:
+        target_exe_path = get_current_executable_path()
+
+    if not os.path.exists(staged_exe_path):
+        raise FileNotFoundError(f"Staged update file not found: {staged_exe_path}")
+
+    # If target is identical to staged, just launch it
+    if os.path.abspath(staged_exe_path).lower() == os.path.abspath(target_exe_path).lower():
+        launch_updated_executable(target_exe_path)
+        return
+
+    pid = os.getpid()
+    temp_dir = tempfile.gettempdir()
+    bat_file = os.path.join(temp_dir, f"slam_updater_{pid}.bat")
+
+    # Helper batch script that waits for current process to release the file lock,
+    # overwrites the executable in-place, refreshes the icon cache, launches the new exe,
+    # and cleans itself up.
+    bat_script = f"""@echo off
+setlocal
+set RETRIES=0
+
+:WAIT_PID
+tasklist /FI "PID eq {pid}" 2>NUL | find /I "{pid}" >NUL
+if "%ERRORLEVEL%"=="0" (
+    timeout /t 1 /nobreak >nul
+    set /a RETRIES+=1
+    if %RETRIES% GEQ 25 goto FORCE_KILL
+    goto WAIT_PID
+)
+goto DO_MOVE
+
+:FORCE_KILL
+taskkill /F /PID {pid} >nul 2>&1
+timeout /t 1 /nobreak >nul
+
+:DO_MOVE
+set MOVE_RETRIES=0
+:RETRY_MOVE
+move /y "{staged_exe_path}" "{target_exe_path}" >nul 2>&1
+if exist "{staged_exe_path}" (
+    set /a MOVE_RETRIES+=1
+    if %MOVE_RETRIES% GEQ 15 goto FAILED
+    timeout /t 1 /nobreak >nul
+    goto RETRY_MOVE
+)
+
+:: Clear and refresh Windows Explorer icon cache so new icon shows immediately
+ie4uinit.exe -show >nul 2>&1
+python -c "import ctypes; ctypes.windll.shell32.SHChangeNotify(0x08000000, 0, None, None)" >nul 2>&1
+
+:: Launch updated executable
+start "" "{target_exe_path}"
+goto CLEANUP
+
+:FAILED
+:: Fallback: if in-place replace failed, start the staged binary
+start "" "{staged_exe_path}"
+
+:CLEANUP
+del "%~f0" >nul 2>&1
+"""
+
+    with open(bat_file, "w", encoding="utf-8") as f:
+        f.write(bat_script)
+
+    DETACHED_PROCESS = 0x00000008
+    subprocess.Popen(["cmd.exe", "/c", bat_file], creationflags=DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW, close_fds=True)
+    sys.exit(0)
+
 def launch_updated_executable(exe_path: str):
     """
-    Launches the new executable in a detached process and exits the current application.
+    Launches an executable in a detached process and exits the current application.
     """
     if not os.path.exists(exe_path):
         raise FileNotFoundError(f"File not found: {exe_path}")
 
-    # Launch detached process on Windows
     DETACHED_PROCESS = 0x00000008
     subprocess.Popen([exe_path], creationflags=DETACHED_PROCESS, close_fds=True)
     sys.exit(0)
+

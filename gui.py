@@ -20,6 +20,7 @@ from typing import Optional
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import webbrowser
+import tempfile
 
 import config
 import updater
@@ -174,16 +175,23 @@ class UpdateDialog(tk.Toplevel):
             return
 
         latest_v = self.update_info.get("latest_version", "new")
-        downloads_dir = os.path.join(os.path.expanduser("~"), "Downloads")
-        if not os.path.exists(downloads_dir):
-            downloads_dir = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
+        current_exe = updater.get_current_executable_path()
+        self._target_exe = current_exe
 
-        dest_file = os.path.join(downloads_dir, f"SLAM_Auto_Filler_v{latest_v}.exe")
-        self._downloaded_file = dest_file
+        # Stage the update file next to the current exe, or in %TEMP% if directory is read-only
+        staged_file = current_exe + ".update.tmp"
+        try:
+            with open(staged_file, "wb") as f:
+                pass
+            os.remove(staged_file)
+        except Exception:
+            staged_file = os.path.join(tempfile.gettempdir(), f"SLAM_Auto_Filler_v{latest_v}.update.tmp")
+
+        self._downloaded_file = staged_file
 
         self.action_btn.config(state=tk.DISABLED, text="Downloading...")
         self.progress_bar["value"] = 0
-        self.status_detail_lbl.config(text="Starting download from GitHub...")
+        self.status_detail_lbl.config(text="Downloading update package from GitHub...")
 
         def _do_download():
             try:
@@ -199,7 +207,7 @@ class UpdateDialog(tk.Toplevel):
 
                 success = updater.download_update_asset(
                     download_url,
-                    dest_file,
+                    staged_file,
                     progress_callback=_prog,
                     cancel_check=lambda: self._cancel_download
                 )
@@ -207,15 +215,16 @@ class UpdateDialog(tk.Toplevel):
                 if success:
                     def _on_success():
                         self.progress_bar["value"] = 100
+                        exe_name = os.path.basename(self._target_exe)
                         self.status_detail_lbl.config(
-                            text=f"✅ Download complete!\nSaved to: {dest_file}"
+                            text=f"✅ Download complete!\nReady to replace {exe_name} in-place with v{latest_v}."
                         )
                         self.action_btn.config(
                             state=tk.NORMAL,
-                            text="🚀 Launch New Version",
+                            text="🚀 Replace & Restart Now",
                             command=self._launch_downloaded
                         )
-                        self.close_btn.config(text="Close")
+                        self.close_btn.config(text="Later")
                     self.after(0, _on_success)
                 else:
                     def _on_abort():
@@ -235,9 +244,9 @@ class UpdateDialog(tk.Toplevel):
     def _launch_downloaded(self):
         if self._downloaded_file and os.path.exists(self._downloaded_file):
             try:
-                updater.launch_updated_executable(self._downloaded_file)
+                updater.replace_and_restart(self._downloaded_file, self._target_exe)
             except Exception as e:
-                messagebox.showerror("Launch Error", f"Could not launch new version:\n{e}")
+                messagebox.showerror("Update Error", f"Could not replace application:\n{e}")
 
     def _on_close(self):
         self._cancel_download = True
