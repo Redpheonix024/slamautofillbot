@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="app_icon.png" width="160" alt="SLAM Auto-Filler Phoenix Logo" />
+</p>
+
 # 🚆 SLAM Jobcard Auto-Filler Bot (Indian Railways)
 
 An automated desktop application designed for Indian Railways Electric Locomotive Sheds (ELS / RPME / PPIO) to automatically parse shed inspection Excel files, stage jobcards in the **SLAM** (Software for Locomotive Asset Management) portal, and dispatch them to respective sections.

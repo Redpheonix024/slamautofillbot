@@ -25,6 +25,24 @@ import config
 import updater
 from excel_parser import parse_excel_bookings
 from slam_bot import SLAMBot
+from PIL import Image, ImageTk
+
+def get_resource_path(filename: str) -> str:
+    """
+    Returns the absolute path to a resource/asset file.
+    Handles running in dev mode as well as PyInstaller frozen onefile mode (_MEIPASS).
+    """
+    if getattr(sys, "frozen", False):
+        base = getattr(sys, "_MEIPASS", "")
+        p = os.path.join(base, filename)
+        if os.path.exists(p):
+            return p
+        p_exe = os.path.join(os.path.dirname(sys.executable), filename)
+        if os.path.exists(p_exe):
+            return p_exe
+    base = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, filename)
+
 
 class UpdateDialog(tk.Toplevel):
     """
@@ -780,6 +798,7 @@ class SLAMAutoFillerGUI:
         self.worker = SLAMBotWorker(self)
         self.worker.start()
 
+        self._apply_window_icon()
         self._build_ui()
         self._update_otp_status()
         self._scan_desktop_files()
@@ -788,19 +807,49 @@ class SLAMAutoFillerGUI:
         # Check for updates in background
         self.root.after(1500, self._check_update_startup)
 
+    def _apply_window_icon(self):
+        """Applies application icon to Tkinter window and taskbar."""
+        ico_p = get_resource_path("app_icon.ico")
+        png_p = get_resource_path("app_icon.png")
+
+        if os.path.exists(ico_p):
+            try:
+                self.root.iconbitmap(ico_p)
+            except Exception:
+                pass
+
+        if os.path.exists(png_p):
+            try:
+                img = Image.open(png_p).resize((64, 64), Image.Resampling.LANCZOS)
+                self._taskbar_icon = ImageTk.PhotoImage(img)
+                self.root.iconphoto(True, self._taskbar_icon)
+            except Exception:
+                pass
+
     def _build_ui(self):
         # ── Header Banner ───────────────────────────────────────────────────────
         header_frame = tk.Frame(self.root, bg="#1a365d", height=70)
         header_frame.pack(fill=tk.X, side=tk.TOP)
 
+        # Header Logo Image
+        png_p = get_resource_path("app_icon.png")
+        if os.path.exists(png_p):
+            try:
+                logo_img = Image.open(png_p).resize((52, 52), Image.Resampling.LANCZOS)
+                self.header_logo = ImageTk.PhotoImage(logo_img)
+                logo_lbl = tk.Label(header_frame, image=self.header_logo, bg="#1a365d")
+                logo_lbl.pack(side=tk.LEFT, padx=(14, 2), pady=9)
+            except Exception:
+                pass
+
         title_lbl = tk.Label(
             header_frame,
-            text="🚆 Indian Railways - SLAM Jobcard Auto-Filler",
+            text="Indian Railways - SLAM Jobcard Auto-Filler",
             font=("Segoe UI", 16, "bold"),
             fg="white",
             bg="#1a365d"
         )
-        title_lbl.pack(side=tk.LEFT, padx=16, pady=10)
+        title_lbl.pack(side=tk.LEFT, padx=(6, 16), pady=10)
 
         subtitle_frame = tk.Frame(header_frame, bg="#1a365d")
         subtitle_frame.pack(side=tk.RIGHT, padx=16, pady=10)

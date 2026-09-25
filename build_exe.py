@@ -33,6 +33,9 @@ def build():
 
     entry_point = os.path.join(base_dir, "main.py")
 
+    icon_file = os.path.join(base_dir, "app_icon.ico")
+    png_file = os.path.join(base_dir, "app_icon.png")
+
     cmd = [
         sys.executable,
         "-m",
@@ -43,7 +46,13 @@ def build():
         "--windowed",
         "--clean",
         "--noconfirm",
+        f"--icon={icon_file}",
+        f"--add-data={icon_file};.",
+        f"--add-data={png_file};.",
         "--collect-all=playwright",
+        "--hidden-import=PIL",
+        "--hidden-import=PIL.ImageTk",
+        "--hidden-import=PIL.Image",
         "--hidden-import=openpyxl",
         "--hidden-import=tkinter",
         "--hidden-import=tkinter.ttk",
