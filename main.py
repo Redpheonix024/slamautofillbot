@@ -6,6 +6,14 @@ import sys
 import argparse
 import os
 
+# Register Windows AppUserModelID before any UI / COM initialization
+if sys.platform == "win32":
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("IndianRailways.SLAM.JobcardAutoFiller.v1")
+    except Exception:
+        pass
+
 def main():
     parser = argparse.ArgumentParser(description="Indian Railways SLAM Jobcard Auto-Filler Bot")
     parser.add_argument("--file", "-f", default="", help="Path to bookings Excel file (.xlsx)")
@@ -22,12 +30,6 @@ def main():
 
     # If no file or --cli passed, launch desktop GUI
     if not args.file and not args.cli:
-        if sys.platform == "win32":
-            try:
-                import ctypes
-                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("indianrailways.slam.autofiller.1")
-            except Exception:
-                pass
         try:
             from gui import main as run_gui
             run_gui()

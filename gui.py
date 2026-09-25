@@ -12,6 +12,15 @@ Supports:
 """
 import os
 import sys
+
+# Register Windows AppUserModelID at module level before any Tkinter windows are created
+if sys.platform == "win32":
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("IndianRailways.SLAM.JobcardAutoFiller.v1")
+    except Exception:
+        pass
+
 import threading
 import queue
 import collections
@@ -813,22 +822,20 @@ class SLAMAutoFillerGUI:
         self._scan_desktop_files()
         self.root.protocol("WM_DELETE_WINDOW", self._on_app_close)
 
+        # Re-apply window icon after Tkinter event loop starts and window is mapped to Windows DWM
+        self.root.after(100, self._apply_window_icon)
+        self.root.after(500, self._apply_window_icon)
+
         # Check for updates in background
         self.root.after(1500, self._check_update_startup)
 
     def _apply_window_icon(self):
         """Applies application icon to Tkinter window and taskbar."""
-        if sys.platform == "win32":
-            try:
-                import ctypes
-                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("indianrailways.slam.autofiller.1")
-            except Exception:
-                pass
-
         ico_p = get_resource_path("app_icon.ico")
         png_p = get_resource_path("app_icon.png")
 
-        if os.path.exists(ico_p):
+        # 1. Native Windows Win32 Icon configuration (Taskbar, Titlebar & Class)
+        if sys.platform == "win32" and os.path.exists(ico_p):
             try:
                 self.root.iconbitmap(default=ico_p)
             except Exception:
@@ -837,19 +844,61 @@ class SLAMAutoFillerGUI:
                 except Exception:
                     pass
 
-        if os.path.exists(png_p):
+            # Explicitly send WM_SETICON and SetClassLongPtr to HWNDs
             try:
-                img32 = Image.open(png_p).resize((32, 32), Image.Resampling.LANCZOS)
-                img16 = Image.open(png_p).resize((16, 16), Image.Resampling.LANCZOS)
-                self._taskbar_icon = ImageTk.PhotoImage(img32)
-                self._titlebar_icon = ImageTk.PhotoImage(img16)
-                self.root.iconphoto(True, self._taskbar_icon, self._titlebar_icon)
+                import ctypes
+                user32 = ctypes.windll.user32
+                self.root.update_idletasks()
+                wid = self.root.winfo_id()
+                hwnd = user32.GetParent(wid)
+                if not hwnd:
+                    hwnd = wid
+                root_ancestor = user32.GetAncestor(wid, 2)  # GA_ROOT = 2
+
+                IMAGE_ICON = 1
+                LR_LOADFROMFILE = 0x00000010
+                WM_SETICON = 0x0080
+                ICON_SMALL = 0
+                ICON_BIG = 1
+
+                # Load 32x32 icon for Taskbar and Alt-Tab
+                hicon_big = user32.LoadImageW(None, ico_p, IMAGE_ICON, 32, 32, LR_LOADFROMFILE)
+                # Load 16x16 icon for Titlebar
+                hicon_small = user32.LoadImageW(None, ico_p, IMAGE_ICON, 16, 16, LR_LOADFROMFILE)
+
+                target_hwnds = set(filter(None, [hwnd, wid, root_ancestor]))
+                for h in target_hwnds:
+                    if hicon_big:
+                        user32.SendMessageW(h, WM_SETICON, ICON_BIG, hicon_big)
+                    if hicon_small:
+                        user32.SendMessageW(h, WM_SETICON, ICON_SMALL, hicon_small)
+
+                # Set window class icon via SetClassLongPtr
+                if ctypes.sizeof(ctypes.c_void_p) == 8:
+                    SetClassLong = user32.SetClassLongPtrW
+                else:
+                    SetClassLong = user32.SetClassLongW
+                SetClassLong.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
+                SetClassLong.restype = ctypes.c_void_p
+
+                GCLP_HICON = -14
+                GCLP_HICONSM = -34
+                for h in target_hwnds:
+                    if hicon_big:
+                        SetClassLong(h, GCLP_HICON, hicon_big)
+                    if hicon_small:
+                        SetClassLong(h, GCLP_HICONSM, hicon_small)
+
+                self._hicons = (hicon_big, hicon_small)
             except Exception:
                 pass
-
-            if os.path.exists(ico_p):
+        else:
+            # Linux / Non-Windows fallback
+            if os.path.exists(png_p):
                 try:
-                    self.root.iconbitmap(ico_p)
+                    img = Image.open(png_p).resize((32, 32), Image.Resampling.LANCZOS)
+                    self._taskbar_icon = ImageTk.PhotoImage(img)
+                    self.root.iconphoto(True, self._taskbar_icon)
                 except Exception:
                     pass
 

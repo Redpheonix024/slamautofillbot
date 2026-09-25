@@ -276,7 +276,6 @@ if exist "{staged_exe_path}" (
 
 :: Clear and refresh Windows Explorer icon cache so new icon shows immediately
 ie4uinit.exe -show >nul 2>&1
-python -c "import ctypes; ctypes.windll.shell32.SHChangeNotify(0x08000000, 0, None, None)" >nul 2>&1
 
 :: Launch updated executable
 start "" "{target_exe_path}"
