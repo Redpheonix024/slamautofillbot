@@ -818,22 +818,40 @@ class SLAMAutoFillerGUI:
 
     def _apply_window_icon(self):
         """Applies application icon to Tkinter window and taskbar."""
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("indianrailways.slam.autofiller.1")
+            except Exception:
+                pass
+
         ico_p = get_resource_path("app_icon.ico")
         png_p = get_resource_path("app_icon.png")
 
         if os.path.exists(ico_p):
             try:
-                self.root.iconbitmap(ico_p)
+                self.root.iconbitmap(default=ico_p)
             except Exception:
-                pass
+                try:
+                    self.root.iconbitmap(ico_p)
+                except Exception:
+                    pass
 
         if os.path.exists(png_p):
             try:
-                img = Image.open(png_p).resize((64, 64), Image.Resampling.LANCZOS)
-                self._taskbar_icon = ImageTk.PhotoImage(img)
-                self.root.iconphoto(True, self._taskbar_icon)
+                img32 = Image.open(png_p).resize((32, 32), Image.Resampling.LANCZOS)
+                img16 = Image.open(png_p).resize((16, 16), Image.Resampling.LANCZOS)
+                self._taskbar_icon = ImageTk.PhotoImage(img32)
+                self._titlebar_icon = ImageTk.PhotoImage(img16)
+                self.root.iconphoto(True, self._taskbar_icon, self._titlebar_icon)
             except Exception:
                 pass
+
+            if os.path.exists(ico_p):
+                try:
+                    self.root.iconbitmap(ico_p)
+                except Exception:
+                    pass
 
     def _build_ui(self):
         # ── Header Banner ───────────────────────────────────────────────────────

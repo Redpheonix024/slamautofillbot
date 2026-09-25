@@ -22,6 +22,12 @@ def main():
 
     # If no file or --cli passed, launch desktop GUI
     if not args.file and not args.cli:
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("indianrailways.slam.autofiller.1")
+            except Exception:
+                pass
         try:
             from gui import main as run_gui
             run_gui()
