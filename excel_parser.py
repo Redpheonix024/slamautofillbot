@@ -69,7 +69,23 @@ def parse_excel_bookings(file_path: str) -> Dict[str, Any]:
     filename = os.path.basename(file_path)
     loco_from_fn = extract_loco_from_text(filename)
     
-    wb = openpyxl.load_workbook(file_path, data_only=True)
+    try:
+        wb = openpyxl.load_workbook(file_path, data_only=True)
+    except (PermissionError, IOError, OSError):
+        # File might be open with an exclusive lock in Excel; copy to temp file and parse
+        import tempfile
+        import shutil
+        temp_dir = tempfile.gettempdir()
+        temp_copy = os.path.join(temp_dir, f"slam_read_{os.getpid()}_{filename}")
+        try:
+            shutil.copy2(file_path, temp_copy)
+            wb = openpyxl.load_workbook(temp_copy, data_only=True)
+        finally:
+            try:
+                if os.path.exists(temp_copy):
+                    os.remove(temp_copy)
+            except Exception:
+                pass
     sheet = wb.active
 
     loco_number = loco_from_fn

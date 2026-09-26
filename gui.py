@@ -54,13 +54,96 @@ def get_resource_path(filename: str) -> str:
     return os.path.join(base, filename)
 
 
+def force_bring_to_front(win):
+    """
+    Forcefully brings a Tkinter window or dialog to the foreground,
+    bypassing Windows OS Foreground Lockout restrictions by attaching to
+    the active foreground thread and pulsing window z-order.
+    Works reliably across Windows 7, 8, 10, 11, and terminal environments.
+    """
+    if not win:
+        return
+    try:
+        win.update_idletasks()
+        if hasattr(win, "state") and win.state() == "iconic":
+            win.deiconify()
+        win.lift()
+
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                user32 = ctypes.windll.user32
+                kernel32 = ctypes.windll.kernel32
+
+                wid = win.winfo_id()
+                hwnd = user32.GetAncestor(wid, 2) or user32.GetParent(wid) or wid
+
+                # If minimized at OS level, restore it
+                SW_RESTORE = 9
+                if user32.IsIconic(hwnd):
+                    user32.ShowWindow(hwnd, SW_RESTORE)
+
+                # ASFW_ANY (-1) allows any process to set foreground window
+                user32.AllowSetForegroundWindow(-1)
+
+                fg_hwnd = user32.GetForegroundWindow()
+                if fg_hwnd and fg_hwnd != hwnd:
+                    fg_tid = user32.GetWindowThreadProcessId(fg_hwnd, None)
+                    cur_tid = kernel32.GetCurrentThreadId()
+                    attached = False
+                    if fg_tid != cur_tid and fg_tid != 0:
+                        attached = bool(user32.AttachThreadInput(cur_tid, fg_tid, True))
+
+                    user32.BringWindowToTop(hwnd)
+                    user32.SetForegroundWindow(hwnd)
+
+                    if attached:
+                        user32.AttachThreadInput(cur_tid, fg_tid, False)
+                else:
+                    user32.BringWindowToTop(hwnd)
+                    user32.SetForegroundWindow(hwnd)
+
+                # Momentary Z-order pulse to pop in front of browsers without locking permanently topmost
+                HWND_TOPMOST = -1
+                HWND_NOTOPMOST = -2
+                SWP_NOMOVE = 0x0002
+                SWP_NOSIZE = 0x0001
+                SWP_SHOWWINDOW = 0x0040
+                user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW)
+                user32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW)
+            except Exception:
+                pass
+
+        try:
+            win.focus_force()
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def notify_user_attention(win=None):
+    """Brings the window to the front and sounds an alert chime."""
+    if win:
+        force_bring_to_front(win)
+    if sys.platform == "win32":
+        try:
+            import winsound
+            winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+        except Exception:
+            pass
+
+
 class UpdateDialog(tk.Toplevel):
     """
     Dedicated dialog for reviewing release details, changelog,
     and downloading/installing the latest version.
     """
-    def __init__(self, parent, update_info: dict):
+    def __init__(self, parent, update_info: dict, gui_ref: Optional[Any] = None):
         super().__init__(parent)
+        self.gui_ref = gui_ref
+        if self.gui_ref:
+            self.gui_ref._active_modal = self
         self.transient(parent)
         latest_v = update_info.get("latest_version", "--")
         self.title(f"🚀 SLAM Auto-Filler Update Available - v{latest_v}")
@@ -83,6 +166,7 @@ class UpdateDialog(tk.Toplevel):
             pass
 
         self.grab_set()
+        force_bring_to_front(self)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _build_ui(self):
@@ -259,6 +343,12 @@ class UpdateDialog(tk.Toplevel):
 
     def _on_close(self):
         self._cancel_download = True
+        if hasattr(self, "gui_ref") and self.gui_ref:
+            self.gui_ref._active_modal = None
+        try:
+            self.grab_release()
+        except Exception:
+            pass
         self.destroy()
 
 class VerificationDialog(tk.Toplevel):
@@ -267,8 +357,11 @@ class VerificationDialog(tk.Toplevel):
     Shows the staged table, section breakdown, and requires explicit user confirmation
     to either 'Save & Submit to Section' or 'Stop / Keep Staged'.
     """
-    def __init__(self, parent, staged_rows, meta):
+    def __init__(self, parent, staged_rows, meta, gui_ref: Optional[Any] = None):
         super().__init__(parent)
+        self.gui_ref = gui_ref
+        if self.gui_ref:
+            self.gui_ref._active_modal = self
         self.transient(parent)
         self.title(f"⚠️ Review & Verify Before Saving - Loco {meta.get('loco_number', '--')} ({meta.get('schedule', '--')})")
         self.geometry("940x630")
@@ -287,6 +380,7 @@ class VerificationDialog(tk.Toplevel):
             pass
 
         self.grab_set()
+        force_bring_to_front(self)
         self.protocol("WM_DELETE_WINDOW", self._on_stop)
 
     def _build_ui(self, staged_rows, meta):
@@ -442,18 +536,33 @@ class VerificationDialog(tk.Toplevel):
 
     def _on_save(self):
         self.result = True
+        if hasattr(self, "gui_ref") and self.gui_ref:
+            self.gui_ref._active_modal = None
+        try:
+            self.grab_release()
+        except Exception:
+            pass
         self.destroy()
 
     def _on_stop(self):
         self.result = False
+        if hasattr(self, "gui_ref") and self.gui_ref:
+            self.gui_ref._active_modal = None
+        try:
+            self.grab_release()
+        except Exception:
+            pass
         self.destroy()
 
 class EditBookingDialog(tk.Toplevel):
     """
     Modal dialog allowing the user to view and edit a booking's defect message and section.
     """
-    def __init__(self, parent, booking_data: dict, is_new: bool = False):
+    def __init__(self, parent, booking_data: dict, is_new: bool = False, gui_ref: Optional[Any] = None):
         super().__init__(parent)
+        self.gui_ref = gui_ref
+        if self.gui_ref:
+            self.gui_ref._active_modal = self
         self.transient(parent)
         self.title("➕ Add New Booking" if is_new else f"✏️ Edit Booking Message - S.No {booking_data.get('sno', '--')}")
         self.geometry("680x480")
@@ -473,7 +582,18 @@ class EditBookingDialog(tk.Toplevel):
             pass
 
         self.grab_set()
-        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        force_bring_to_front(self)
+        self.protocol("WM_DELETE_WINDOW", self._on_cancel)
+
+    def _on_cancel(self):
+        self.result = None
+        if hasattr(self, "gui_ref") and self.gui_ref:
+            self.gui_ref._active_modal = None
+        try:
+            self.grab_release()
+        except Exception:
+            pass
+        self.destroy()
 
     def _build_ui(self):
         container = ttk.Frame(self, padding=16)
@@ -582,12 +702,12 @@ class EditBookingDialog(tk.Toplevel):
             padx=12,
             pady=6,
             cursor="hand2",
-            command=self.destroy
+            command=self._on_cancel
         )
         cancel_btn.pack(side=tk.LEFT)
 
         self.bind("<Control-Return>", lambda e: self._on_save())
-        self.bind("<Escape>", lambda e: self.destroy())
+        self.bind("<Escape>", lambda e: self._on_cancel())
 
     def _toggle_section_chip(self, sec: str):
         from excel_parser import normalize_sections
@@ -639,6 +759,12 @@ class EditBookingDialog(tk.Toplevel):
             "obs_type": self.obs_type_var.get(),
             "kind": self.kind_var.get()
         }
+        if hasattr(self, "gui_ref") and self.gui_ref:
+            self.gui_ref._active_modal = None
+        try:
+            self.grab_release()
+        except Exception:
+            pass
         self.destroy()
 
 class SLAMBotWorker(threading.Thread):
@@ -721,17 +847,21 @@ class SLAMBotWorker(threading.Thread):
                         def _done_success(r=res):
                             self.gui.status_lbl.config(text="Completed Successfully!")
                             self.gui.progress_bar["value"] = 100
+                            notify_user_attention(self.gui.root)
                             messagebox.showinfo(
                                 "SLAM Jobcards Created Successfully",
-                                f"🎉 Success!\n\nAll {r['entered']}/{r['total']} jobcards for Locomotive {r['loco_number']} have been created, saved, and dispatched in the SLAM portal."
+                                f"🎉 Success!\n\nAll {r['entered']}/{r['total']} jobcards for Locomotive {r['loco_number']} have been created, saved, and dispatched in the SLAM portal.",
+                                parent=self.gui.root
                             )
                         self.gui.root.after(0, _done_success)
                     elif res.get("status") == "verification_deferred":
                         def _done_deferred(r=res):
                             self.gui.status_lbl.config(text="Save deferred by user.")
+                            notify_user_attention(self.gui.root)
                             messagebox.showinfo(
                                 "Save Deferred",
-                                f"Observations for Locomotive {r.get('loco_number')} remain staged in the SLAM portal.\n\nNo save was committed."
+                                f"Observations for Locomotive {r.get('loco_number')} remain staged in the SLAM portal.\n\nNo save was committed.",
+                                parent=self.gui.root
                             )
                         self.gui.root.after(0, _done_deferred)
                     elif res.get("status") == "cancelled":
@@ -743,7 +873,8 @@ class SLAMBotWorker(threading.Thread):
                     self.gui.log(f"FATAL ERROR: {e}")
                     def _done_error(err=e):
                         self.gui.status_lbl.config(text="Error occurred.")
-                        messagebox.showerror("Execution Error", f"An error occurred during auto-fill:\n\n{err}")
+                        notify_user_attention(self.gui.root)
+                        messagebox.showerror("Execution Error", f"An error occurred during auto-fill:\n\n{err}", parent=self.gui.root)
                     self.gui.root.after(0, _done_error)
                 finally:
                     if not params.get("keep_browser", True):
@@ -803,6 +934,7 @@ class SLAMAutoFillerGUI:
         self.current_excel_path = ""
         self.parsed_data = None
         self.update_info = None
+        self._active_modal: Optional[tk.Toplevel] = None
 
         # Load credentials from config / user_settings
         saved_u, saved_p = config.get_credentials()
@@ -822,12 +954,37 @@ class SLAMAutoFillerGUI:
         self._scan_desktop_files()
         self.root.protocol("WM_DELETE_WINDOW", self._on_app_close)
 
+        # Bind window focus and mapping events to auto-raise active dialogs when taskbar is clicked
+        self.root.bind("<FocusIn>", self._on_root_focus)
+        self.root.bind("<Map>", self._on_root_map)
+
         # Re-apply window icon after Tkinter event loop starts and window is mapped to Windows DWM
         self.root.after(100, self._apply_window_icon)
         self.root.after(500, self._apply_window_icon)
 
         # Check for updates in background
         self.root.after(1500, self._check_update_startup)
+
+    def _on_root_focus(self, event=None):
+        if event and event.widget != self.root:
+            return
+        if hasattr(self, "_active_modal") and self._active_modal:
+            try:
+                if self._active_modal.winfo_exists():
+                    force_bring_to_front(self._active_modal)
+                    self._active_modal.focus_force()
+            except Exception:
+                pass
+
+    def _on_root_map(self, event=None):
+        if event and event.widget != self.root:
+            return
+        if hasattr(self, "_active_modal") and self._active_modal:
+            try:
+                if self._active_modal.winfo_exists():
+                    self.root.after(60, self._on_root_focus)
+            except Exception:
+                pass
 
     def _apply_window_icon(self):
         """Applies application icon to Tkinter window and taskbar."""
@@ -854,6 +1011,18 @@ class SLAMAutoFillerGUI:
                 if not hwnd:
                     hwnd = wid
                 root_ancestor = user32.GetAncestor(wid, 2)  # GA_ROOT = 2
+
+                # Ensure WS_EX_APPWINDOW is set on container/top-level HWNDs
+                # so Windows Taskbar manages restore & foreground activation reliably on all systems
+                GWL_EXSTYLE = -20
+                WS_EX_APPWINDOW = 0x00040000
+                for h in set([hwnd, root_ancestor]):
+                    try:
+                        exstyle = user32.GetWindowLongW(h, GWL_EXSTYLE)
+                        if not (exstyle & WS_EX_APPWINDOW):
+                            user32.SetWindowLongW(h, GWL_EXSTYLE, exstyle | WS_EX_APPWINDOW)
+                    except Exception:
+                        pass
 
                 IMAGE_ICON = 1
                 LR_LOADFROMFILE = 0x00000010
@@ -1366,10 +1535,16 @@ class SLAMAutoFillerGUI:
     def log(self, message: str):
         """Thread-safe logging into the GUI text widget with timestamps."""
         def _append():
-            ts = datetime.now().strftime("%H:%M:%S")
-            self.log_text.insert(tk.END, f"[{ts}] {message}\n")
-            self.log_text.see(tk.END)
-        self.root.after(0, _append)
+            try:
+                ts = datetime.now().strftime("%H:%M:%S")
+                self.log_text.insert(tk.END, f"[{ts}] {message}\n")
+                self.log_text.see(tk.END)
+            except Exception:
+                pass
+        try:
+            self.root.after(0, _append)
+        except Exception:
+            pass
 
     def _scan_desktop_files(self):
         """Scans Desktop, Telegram Desktop, and Downloads for .xlsx booking files."""
@@ -1522,7 +1697,7 @@ class SLAMAutoFillerGUI:
             return
 
         booking = self.parsed_data["bookings"][idx]
-        dlg = EditBookingDialog(self.root, booking, is_new=False)
+        dlg = EditBookingDialog(self.root, booking, is_new=False, gui_ref=self)
         self.root.wait_window(dlg)
 
         if dlg.result:
@@ -1548,7 +1723,7 @@ class SLAMAutoFillerGUI:
             "obs_type": self.obs_type_var.get(),
             "kind": self.job_kind_var.get()
         }
-        dlg = EditBookingDialog(self.root, new_booking, is_new=True)
+        dlg = EditBookingDialog(self.root, new_booking, is_new=True, gui_ref=self)
         self.root.wait_window(dlg)
 
         if dlg.result:
@@ -1594,6 +1769,7 @@ class SLAMAutoFillerGUI:
 
         def _ask():
             dlg = tk.Toplevel(self.root)
+            self._active_modal = dlg
             dlg.transient(self.root)
             dlg.title("SLAM Portal Security Verification")
             dlg.geometry("450x240")
@@ -1608,6 +1784,7 @@ class SLAMAutoFillerGUI:
                 pass
 
             dlg.grab_set()
+            notify_user_attention(dlg)
 
             tk.Label(dlg, text="🔑 SLAM Security Verification", font=("Segoe UI", 12, "bold"), fg="#1a365d").pack(pady=(14, 4))
             tk.Label(
@@ -1629,11 +1806,21 @@ class SLAMAutoFillerGUI:
                 if val:
                     self.daily_otp_var.set(val)
                     self._update_otp_status()
+                self._active_modal = None
+                try:
+                    dlg.grab_release()
+                except Exception:
+                    pass
                 dlg.destroy()
                 event_set_safe()
 
             def _cancel():
                 result[0] = ""
+                self._active_modal = None
+                try:
+                    dlg.grab_release()
+                except Exception:
+                    pass
                 dlg.destroy()
                 event_set_safe()
 
@@ -1662,8 +1849,11 @@ class SLAMAutoFillerGUI:
         result = [False]
 
         def _ask():
-            dlg = VerificationDialog(self.root, staged_rows, meta)
+            dlg = VerificationDialog(self.root, staged_rows, meta, gui_ref=self)
+            self._active_modal = dlg
+            notify_user_attention(dlg)
             self.root.wait_window(dlg)
+            self._active_modal = None
             result[0] = dlg.result
             event.set()
 
@@ -1733,10 +1923,16 @@ class SLAMAutoFillerGUI:
 
     def _update_progress(self, current: int, total: int, msg: str):
         def _update():
-            pct = int((current / total) * 100) if total > 0 else 0
-            self.progress_bar["value"] = pct
-            self.status_lbl.config(text=f"{msg} ({pct}%)")
-        self.root.after(0, _update)
+            try:
+                pct = int((current / total) * 100) if total > 0 else 0
+                self.progress_bar["value"] = pct
+                self.status_lbl.config(text=f"{msg} ({pct}%)")
+            except Exception:
+                pass
+        try:
+            self.root.after(0, _update)
+        except Exception:
+            pass
 
     def _reset_buttons(self):
         self.start_btn.config(state=tk.NORMAL)
@@ -1793,7 +1989,7 @@ class SLAMAutoFillerGUI:
 
     def _open_update_dialog(self):
         if self.update_info:
-            UpdateDialog(self.root, self.update_info)
+            UpdateDialog(self.root, self.update_info, gui_ref=self)
 
 def main():
     root = tk.Tk()

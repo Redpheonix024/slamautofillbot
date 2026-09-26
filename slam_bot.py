@@ -107,14 +107,30 @@ class SLAMBot:
         self.browser = None
 
         # Universal Browser Resolution:
-        # 1. Standard Chromium (if available in Playwright cache)
-        # 2. Microsoft Edge (channel="msedge") - built into every Windows 10/11 installation!
-        # 3. Google Chrome (channel="chrome")
+        # 1. Microsoft Edge (channel="msedge") - standard built-in on Windows 10/11
+        # 2. Google Chrome (channel="chrome")
+        # 3. Direct executable search for Edge / Chrome on Windows (for enterprise/restricted PCs)
+        # 4. Standard Chromium (Playwright cache fallback)
         attempts = [
-            ("Chromium", {"headless": self.headless, "slow_mo": 50, "args": launch_args}),
             ("Microsoft Edge", {"channel": "msedge", "headless": self.headless, "slow_mo": 50, "args": launch_args}),
-            ("Google Chrome", {"channel": "chrome", "headless": self.headless, "slow_mo": 50, "args": launch_args})
+            ("Google Chrome", {"channel": "chrome", "headless": self.headless, "slow_mo": 50, "args": launch_args}),
         ]
+
+        if sys.platform == "win32":
+            candidate_exes = [
+                os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"),
+                os.path.expandvars(r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"),
+                os.path.expandvars(r"%LocalAppData%\Microsoft\Edge\Application\msedge.exe"),
+                os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+                os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
+                os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
+            ]
+            for exe in candidate_exes:
+                if os.path.isfile(exe):
+                    attempts.append((f"Installed Browser ({os.path.basename(exe)})", {"executable_path": exe, "headless": self.headless, "slow_mo": 50, "args": launch_args}))
+                    break
+
+        attempts.append(("Chromium", {"headless": self.headless, "slow_mo": 50, "args": launch_args}))
 
         last_err = None
         for browser_name, launch_opts in attempts:
@@ -319,11 +335,14 @@ class SLAMBot:
 
         self.log(f"Selecting Loco '{loco_clean}'...")
         # Select option
-        self.page.evaluate(f"""() => {{
+        self.page.evaluate("""(val) => {
             const el = document.getElementById('Content1_ddlLoco');
-            el.value = {repr(target_opt['value'])};
-            el.onchange();
-        }}""")
+            if (el) {
+                el.value = val;
+                if (typeof $ !== 'undefined') $(el).trigger('change');
+                if (el.onchange) el.onchange();
+            }
+        }""", target_opt['value'])
 
         # Wait for ASP.NET postback / UpdatePanel to settle
         time.sleep(3)
@@ -340,42 +359,47 @@ class SLAMBot:
         obs_val = config.OBS_TYPE_VALUES.get(self.obs_type, "2")
         kind_val = config.JOB_KIND_VALUES.get(self.job_kind, "2")
 
-        res = self.page.evaluate(f"""() => {{
+        res = self.page.evaluate("""([typeVal, eqtVal, obsVal, kindVal]) => {
             // 1. Jobcard Type
             const ddlJobcardType = document.getElementById('Content1_ddlJobcardType');
-            if (ddlJobcardType) {{
-                ddlJobcardType.value = '{type_val}';
-                $(ddlJobcardType).trigger('change');
-            }}
+            if (ddlJobcardType) {
+                ddlJobcardType.value = typeVal;
+                if (typeof $ !== 'undefined') $(ddlJobcardType).trigger('change');
+                else if (ddlJobcardType.onchange) ddlJobcardType.onchange();
+            }
 
             // 2. Eqt Required
             const ddlEqReq = document.getElementById('Content1_EQtRequired');
-            if (ddlEqReq) {{
-                ddlEqReq.value = '{eqt_val}';
-                SectionEnable(ddlEqReq.id, 'SectionSingleSelectDiv', 'SectionMultiCheckDiv');
-            }}
+            if (ddlEqReq) {
+                ddlEqReq.value = eqtVal;
+                if (typeof SectionEnable === 'function') {
+                    SectionEnable(ddlEqReq.id, 'SectionSingleSelectDiv', 'SectionMultiCheckDiv');
+                }
+            }
 
             // 3. Obs Type (Source)
             const ddlObsType = document.getElementById('Content1_ddlObsType');
-            if (ddlObsType) {{
-                ddlObsType.value = '{obs_val}';
-                $(ddlObsType).trigger('change');
-            }}
+            if (ddlObsType) {
+                ddlObsType.value = obsVal;
+                if (typeof $ !== 'undefined') $(ddlObsType).trigger('change');
+                else if (ddlObsType.onchange) ddlObsType.onchange();
+            }
 
             // 4. Job Kind
             const ddlJobKind = document.getElementById('Content1_ddlJobKind');
-            if (ddlJobKind) {{
-                ddlJobKind.value = '{kind_val}';
-                $(ddlJobKind).trigger('change');
-            }}
+            if (ddlJobKind) {
+                ddlJobKind.value = kindVal;
+                if (typeof $ !== 'undefined') $(ddlJobKind).trigger('change');
+                else if (ddlJobKind.onchange) ddlJobKind.onchange();
+            }
 
-            return {{
-                jobcardType: ddlJobcardType ? ddlJobcardType.options[ddlJobcardType.selectedIndex].text : null,
-                eqtReq: ddlEqReq ? ddlEqReq.options[ddlEqReq.selectedIndex].text : null,
-                obsType: ddlObsType ? ddlObsType.options[ddlObsType.selectedIndex].text : null,
-                jobKind: ddlJobKind ? ddlJobKind.options[ddlJobKind.selectedIndex].text : null
-            }};
-        }}""")
+            return {
+                jobcardType: ddlJobcardType && ddlJobcardType.selectedIndex >= 0 ? ddlJobcardType.options[ddlJobcardType.selectedIndex].text : null,
+                eqtReq: ddlEqReq && ddlEqReq.selectedIndex >= 0 ? ddlEqReq.options[ddlEqReq.selectedIndex].text : null,
+                obsType: ddlObsType && ddlObsType.selectedIndex >= 0 ? ddlObsType.options[ddlObsType.selectedIndex].text : null,
+                jobKind: ddlJobKind && ddlJobKind.selectedIndex >= 0 ? ddlJobKind.options[ddlJobKind.selectedIndex].text : null
+            };
+        }""", [type_val, eqt_val, obs_val, kind_val])
         self.log(f"Form configured: {res}")
 
     def add_observation(
@@ -395,22 +419,24 @@ class SLAMBot:
         target_kind = kind or self.job_kind
         kind_val = config.JOB_KIND_VALUES.get(target_kind, "2")
 
-        res = self.page.evaluate(f"""async () => {{
+        res = self.page.evaluate("""async ([targetObs, targetKind, sectionCodes, textVal]) => {
             // 1. Set Obs Type for this specific entry
             const ddlObsType = document.getElementById('Content1_ddlObsType');
-            if (ddlObsType && ddlObsType.value !== '{obs_val}') {{
-                ddlObsType.value = '{obs_val}';
-                $(ddlObsType).trigger('change');
-            }}
+            if (ddlObsType && ddlObsType.value !== targetObs) {
+                ddlObsType.value = targetObs;
+                if (typeof $ !== 'undefined') $(ddlObsType).trigger('change');
+                else if (ddlObsType.onchange) ddlObsType.onchange();
+            }
 
             // 2. Set Job Kind for this specific entry
             const ddlJobKind = document.getElementById('Content1_ddlJobKind');
-            if (ddlJobKind && ddlJobKind.value !== '{kind_val}') {{
-                ddlJobKind.value = '{kind_val}';
-                $(ddlJobKind).trigger('change');
-            }}
+            if (ddlJobKind && ddlJobKind.value !== targetKind) {
+                ddlJobKind.value = targetKind;
+                if (typeof $ !== 'undefined') $(ddlJobKind).trigger('change');
+                else if (ddlJobKind.onchange) ddlJobKind.onchange();
+            }
 
-            function selectSections(sectionCodes) {{
+            function selectSections(codes) {
                 const div = document.getElementById('ctl00$Content1$ddlSection1Parent');
                 const dd = document.getElementsByName('ctl00$Content1$ddlSection1')[0];
                 const hidden = document.getElementsByName('ctl00$Content1$ddlSection1_hidden')[0];
@@ -420,42 +446,47 @@ class SLAMBot:
                 let returnArray = [];
                 let returnSelectedValues = [];
                 
-                for (let i = 0; i < checkboxes.length; i++) {{
+                for (let i = 0; i < checkboxes.length; i++) {
                     const chk = checkboxes[i];
-                    if (chk.type === 'checkbox' && chk.title !== 'Check/Uncheck All' && chk.title !== '--Select--') {{
-                        if (sectionCodes.includes(chk.title)) {{
+                    if (chk.type === 'checkbox' && chk.title !== 'Check/Uncheck All' && chk.title !== '--Select--') {
+                        if (codes.includes(chk.title)) {
                             chk.checked = true;
                             if (chk.parentNode) chk.parentNode.style.background = '#FDFDCD';
                             returnArray.push(chk.title);
                             returnSelectedValues.push(chk.value);
-                        }} else {{
+                        } else {
                             chk.checked = false;
                             if (chk.parentNode) chk.parentNode.style.background = 'transparent';
-                        }}
-                    }}
-                }}
+                        }
+                    }
+                }
                 hidden.value = returnSelectedValues.length > 0 ? returnSelectedValues.join(',') : '0';
                 dd.value = returnArray.join(';');
-            }}
+            }
 
-            selectSections({section_codes});
+            selectSections(sectionCodes);
             const txt = document.getElementById('Content1_txtRemarks');
-            txt.value = {repr(text.strip())};
+            if (txt) txt.value = textVal;
             const initialRows = document.getElementById('tbldata1') ? document.getElementById('tbldata1').rows.length : 0;
             
             // Trigger Add To Job Observations
-            StoreInfo();
+            if (typeof StoreInfo === 'function') {
+                StoreInfo();
+            } else {
+                const addBtn = document.getElementById('Content1_btnAdd');
+                if (addBtn) addBtn.click();
+            }
             
-            // Wait for tbldata1 to update
-            for (let i = 0; i < 40; i++) {{
+            // Wait for tbldata1 to update (up to 10 seconds)
+            for (let i = 0; i < 50; i++) {
                 await new Promise(r => setTimeout(r, 200));
                 const currentRows = document.getElementById('tbldata1') ? document.getElementById('tbldata1').rows.length : 0;
-                if (currentRows > initialRows) {{
-                    return {{ success: true, currentRows: currentRows }};
-                }}
-            }}
-            return {{ success: false, timeout: true }};
-        }}""")
+                if (currentRows > initialRows) {
+                    return { success: true, currentRows: currentRows };
+                }
+            }
+            return { success: false, timeout: true };
+        }""", [obs_val, kind_val, section_codes, text.strip()])
 
         return res.get("success", False)
 
