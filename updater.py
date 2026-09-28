@@ -230,62 +230,81 @@ def replace_and_restart(staged_exe_path: str, target_exe_path: Optional[str] = N
     if not target_exe_path:
         target_exe_path = get_current_executable_path()
 
+    target_exe_path = os.path.abspath(target_exe_path)
+    staged_exe_path = os.path.abspath(staged_exe_path)
+
     if not os.path.exists(staged_exe_path):
         raise FileNotFoundError(f"Staged update file not found: {staged_exe_path}")
 
     # If target is identical to staged, just launch it
-    if os.path.abspath(staged_exe_path).lower() == os.path.abspath(target_exe_path).lower():
+    if staged_exe_path.lower() == target_exe_path.lower():
         launch_updated_executable(target_exe_path)
         return
 
     pid = os.getpid()
+    exe_name = os.path.basename(target_exe_path)
     temp_dir = tempfile.gettempdir()
     bat_file = os.path.join(temp_dir, f"slam_updater_{pid}.bat")
+    log_file = os.path.join(temp_dir, "slam_update.log")
 
-    # Helper batch script that waits for current process to release the file lock,
-    # overwrites the executable in-place, refreshes the icon cache, launches the new exe,
-    # and cleans itself up.
+    # Helper batch script that terminates the running process tree (including PyInstaller bootloader),
+    # retries overwriting the executable in-place safely using ping delays (immune to input redirection),
+    # refreshes the Explorer icon cache, launches the new exe, and cleans up.
     bat_script = f"""@echo off
 setlocal
+echo [%DATE% %TIME%] Update process started for PID {pid} > "{log_file}"
+echo [%DATE% %TIME%] Target: "{target_exe_path}" >> "{log_file}"
+echo [%DATE% %TIME%] Staged: "{staged_exe_path}" >> "{log_file}"
+
+:: Terminate process tree and any lingering instances of {exe_name}
+echo [%DATE% %TIME%] Terminating process tree PID {pid}... >> "{log_file}"
+taskkill /F /T /PID {pid} >nul 2>&1
+echo [%DATE% %TIME%] Terminating any instances of {exe_name}... >> "{log_file}"
+taskkill /F /T /IM "{exe_name}" >nul 2>&1
+
+:: Wait 2 seconds using ping (safe from redirection issues under CREATE_NO_WINDOW)
+ping 127.0.0.1 -n 3 >nul
+
+:: In-place replacement loop
 set RETRIES=0
-
-:WAIT_PID
-tasklist /FI "PID eq {pid}" 2>NUL | find /I "{pid}" >NUL
-if "%ERRORLEVEL%"=="0" (
-    timeout /t 1 /nobreak >nul
-    set /a RETRIES+=1
-    if %RETRIES% GEQ 25 goto FORCE_KILL
-    goto WAIT_PID
-)
-goto DO_MOVE
-
-:FORCE_KILL
-taskkill /F /PID {pid} >nul 2>&1
-timeout /t 1 /nobreak >nul
-
-:DO_MOVE
-set MOVE_RETRIES=0
 :RETRY_MOVE
-move /y "{staged_exe_path}" "{target_exe_path}" >nul 2>&1
-if exist "{staged_exe_path}" (
-    set /a MOVE_RETRIES+=1
-    if %MOVE_RETRIES% GEQ 15 goto FAILED
-    timeout /t 1 /nobreak >nul
-    goto RETRY_MOVE
-)
+set /a RETRIES+=1
+echo [%DATE% %TIME%] Attempt %RETRIES% to replace target binary... >> "{log_file}"
 
+:: First try direct move
+move /y "{staged_exe_path}" "{target_exe_path}" >nul 2>&1
+if not exist "{staged_exe_path}" if exist "{target_exe_path}" goto RESTART
+
+:: If direct move failed, try deleting the target first then move
+del /f /q "{target_exe_path}" >nul 2>&1
+move /y "{staged_exe_path}" "{target_exe_path}" >nul 2>&1
+if not exist "{staged_exe_path}" if exist "{target_exe_path}" goto RESTART
+
+if %RETRIES% GEQ 20 goto FAILED
+ping 127.0.0.1 -n 2 >nul
+goto RETRY_MOVE
+
+:RESTART
+echo [%DATE% %TIME%] Replacement succeeded on attempt %RETRIES%! >> "{log_file}"
 :: Clear and refresh Windows Explorer icon cache so new icon shows immediately
 ie4uinit.exe -show >nul 2>&1
+ping 127.0.0.1 -n 2 >nul
 
 :: Launch updated executable
+echo [%DATE% %TIME%] Launching updated executable: "{target_exe_path}" >> "{log_file}"
 start "" "{target_exe_path}"
 goto CLEANUP
 
 :FAILED
-:: Fallback: if in-place replace failed, start the staged binary
-start "" "{staged_exe_path}"
+echo [%DATE% %TIME%] ERROR: In-place replacement failed after %RETRIES% attempts. >> "{log_file}"
+if exist "{staged_exe_path}" (
+    echo [%DATE% %TIME%] Fallback: Launching staged executable directly: "{staged_exe_path}" >> "{log_file}"
+    start "" "{staged_exe_path}"
+)
 
 :CLEANUP
+echo [%DATE% %TIME%] Update script finished. >> "{log_file}"
+ping 127.0.0.1 -n 2 >nul
 del "%~f0" >nul 2>&1
 """
 
@@ -293,8 +312,10 @@ del "%~f0" >nul 2>&1
         f.write(bat_script)
 
     DETACHED_PROCESS = 0x00000008
-    subprocess.Popen(["cmd.exe", "/c", bat_file], creationflags=DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW, close_fds=True)
-    sys.exit(0)
+    CREATE_NO_WINDOW = 0x08000000
+    cmd = f'cmd.exe /s /c ""{bat_file}""'
+    subprocess.Popen(cmd, shell=False, creationflags=DETACHED_PROCESS | CREATE_NO_WINDOW, close_fds=True)
+    os._exit(0)
 
 def launch_updated_executable(exe_path: str):
     """
@@ -305,5 +326,5 @@ def launch_updated_executable(exe_path: str):
 
     DETACHED_PROCESS = 0x00000008
     subprocess.Popen([exe_path], creationflags=DETACHED_PROCESS, close_fds=True)
-    sys.exit(0)
+    os._exit(0)
 

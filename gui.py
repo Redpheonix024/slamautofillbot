@@ -272,13 +272,13 @@ class UpdateDialog(tk.Toplevel):
         self._target_exe = current_exe
 
         # Stage the update file next to the current exe, or in %TEMP% if directory is read-only
-        staged_file = current_exe + ".update.tmp"
+        staged_file = current_exe + ".update.exe"
         try:
             with open(staged_file, "wb") as f:
                 pass
             os.remove(staged_file)
         except Exception:
-            staged_file = os.path.join(tempfile.gettempdir(), f"SLAM_Auto_Filler_v{latest_v}.update.tmp")
+            staged_file = os.path.join(tempfile.gettempdir(), f"SLAM_Auto_Filler_v{latest_v}.update.exe")
 
         self._downloaded_file = staged_file
 
@@ -337,6 +337,12 @@ class UpdateDialog(tk.Toplevel):
     def _launch_downloaded(self):
         if self._downloaded_file and os.path.exists(self._downloaded_file):
             try:
+                # Stop worker before launching updater so background threads don't linger
+                if hasattr(self, "gui_ref") and self.gui_ref and hasattr(self.gui_ref, "worker"):
+                    try:
+                        self.gui_ref.worker.stop_worker()
+                    except Exception:
+                        pass
                 updater.replace_and_restart(self._downloaded_file, self._target_exe)
             except Exception as e:
                 messagebox.showerror("Update Error", f"Could not replace application:\n{e}")
@@ -916,6 +922,14 @@ class SLAMBotWorker(threading.Thread):
         """Signals the bot to stop without touching Playwright objects from another thread."""
         if self.bot:
             self.bot.stop()
+
+    def stop_worker(self):
+        """Signals the worker loop to shut down cleanly."""
+        self._running = False
+        try:
+            self.task_queue.put({"action": "SHUTDOWN"})
+        except Exception:
+            pass
 
 class SLAMAutoFillerGUI:
     def __init__(self, root: tk.Tk):
