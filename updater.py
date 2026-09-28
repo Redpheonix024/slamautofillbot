@@ -243,12 +243,14 @@ def replace_and_restart(staged_exe_path: str, target_exe_path: Optional[str] = N
 
     pid = os.getpid()
     exe_name = os.path.basename(target_exe_path)
+    target_dir = os.path.dirname(target_exe_path)
     temp_dir = tempfile.gettempdir()
     bat_file = os.path.join(temp_dir, f"slam_updater_{pid}.bat")
     log_file = os.path.join(temp_dir, "slam_update.log")
 
     # Helper batch script that terminates the running process tree (including PyInstaller bootloader),
     # retries overwriting the executable in-place safely using ping delays (immune to input redirection),
+    # resets PyInstaller environment so the new instance unpacks cleanly into a fresh temporary directory,
     # refreshes the Explorer icon cache, launches the new exe, and cleans up.
     bat_script = f"""@echo off
 setlocal
@@ -290,13 +292,29 @@ echo [%DATE% %TIME%] Replacement succeeded on attempt %RETRIES%! >> "{log_file}"
 ie4uinit.exe -show >nul 2>&1
 ping 127.0.0.1 -n 2 >nul
 
-:: Launch updated executable
+:: Change working directory to target folder and reset PyInstaller environment
+cd /d "{target_dir}"
+set PYINSTALLER_RESET_ENVIRONMENT=1
+set _MEIPASS2=
+set _MEIPASS=
+set PYI_CHILD_SUBPROCESS=
+set PYTHONPATH=
+set PYTHONHOME=
+
+:: Launch updated executable as a clean top-level instance
 echo [%DATE% %TIME%] Launching updated executable: "{target_exe_path}" >> "{log_file}"
 start "" "{target_exe_path}"
 goto CLEANUP
 
 :FAILED
 echo [%DATE% %TIME%] ERROR: In-place replacement failed after %RETRIES% attempts. >> "{log_file}"
+cd /d "{target_dir}"
+set PYINSTALLER_RESET_ENVIRONMENT=1
+set _MEIPASS2=
+set _MEIPASS=
+set PYI_CHILD_SUBPROCESS=
+set PYTHONPATH=
+set PYTHONHOME=
 if exist "{staged_exe_path}" (
     echo [%DATE% %TIME%] Fallback: Launching staged executable directly: "{staged_exe_path}" >> "{log_file}"
     start "" "{staged_exe_path}"
@@ -311,10 +329,28 @@ del "%~f0" >nul 2>&1
     with open(bat_file, "w", encoding="utf-8") as f:
         f.write(bat_script)
 
+    clean_env = os.environ.copy()
+    clean_env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    clean_env.pop("_MEIPASS2", None)
+    clean_env.pop("_MEIPASS", None)
+    clean_env.pop("PYI_CHILD_SUBPROCESS", None)
+    clean_env.pop("PYTHONPATH", None)
+    clean_env.pop("PYTHONHOME", None)
+    if "PATH" in clean_env:
+        clean_paths = [p for p in clean_env["PATH"].split(os.pathsep) if "_MEI" not in p]
+        clean_env["PATH"] = os.pathsep.join(clean_paths)
+
     DETACHED_PROCESS = 0x00000008
     CREATE_NO_WINDOW = 0x08000000
     cmd = f'cmd.exe /s /c ""{bat_file}""'
-    subprocess.Popen(cmd, shell=False, creationflags=DETACHED_PROCESS | CREATE_NO_WINDOW, close_fds=True)
+    subprocess.Popen(
+        cmd,
+        cwd=target_dir,
+        env=clean_env,
+        shell=False,
+        creationflags=DETACHED_PROCESS | CREATE_NO_WINDOW,
+        close_fds=True
+    )
     os._exit(0)
 
 def launch_updated_executable(exe_path: str):
@@ -324,7 +360,19 @@ def launch_updated_executable(exe_path: str):
     if not os.path.exists(exe_path):
         raise FileNotFoundError(f"File not found: {exe_path}")
 
+    target_dir = os.path.dirname(os.path.abspath(exe_path))
+    clean_env = os.environ.copy()
+    clean_env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    clean_env.pop("_MEIPASS2", None)
+    clean_env.pop("_MEIPASS", None)
+    clean_env.pop("PYI_CHILD_SUBPROCESS", None)
+    clean_env.pop("PYTHONPATH", None)
+    clean_env.pop("PYTHONHOME", None)
+    if "PATH" in clean_env:
+        clean_paths = [p for p in clean_env["PATH"].split(os.pathsep) if "_MEI" not in p]
+        clean_env["PATH"] = os.pathsep.join(clean_paths)
+
     DETACHED_PROCESS = 0x00000008
-    subprocess.Popen([exe_path], creationflags=DETACHED_PROCESS, close_fds=True)
+    subprocess.Popen([exe_path], cwd=target_dir, env=clean_env, creationflags=DETACHED_PROCESS, close_fds=True)
     os._exit(0)
 
