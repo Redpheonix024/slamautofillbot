@@ -22,6 +22,8 @@ class SLAMBot:
         obs_type: str = config.DEFAULT_OBS_TYPE,
         job_kind: str = config.DEFAULT_JOB_KIND,
         headless: bool = False,
+        browser_choice: Optional[str] = None,
+        custom_browser_path: Optional[str] = None,
         log_callback: Optional[Callable[[str], None]] = None,
         otp_callback: Optional[Callable[[], str]] = None,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
@@ -36,6 +38,12 @@ class SLAMBot:
         self.obs_type = obs_type
         self.job_kind = job_kind
         self.headless = headless
+
+        b_pref = config.get_browser_preference()
+        self.browser_choice = browser_choice if browser_choice is not None else b_pref.get("choice", config.BROWSER_CHOICE_AUTO)
+        self.custom_browser_path = custom_browser_path if custom_browser_path is not None else b_pref.get("custom_path", "")
+        self.current_browser_launched: Optional[str] = None
+
         self.log_callback = log_callback
         self.otp_callback = otp_callback
         self.progress_callback = progress_callback
@@ -72,7 +80,7 @@ class SLAMBot:
         return ""
 
     def start_browser(self):
-        """Launches the Chromium browser if not already open."""
+        """Launches the selected or detected browser if not already open."""
         if self.browser and self.browser.is_connected() and self.page:
             try:
                 if not self.page.is_closed():
@@ -80,7 +88,8 @@ class SLAMBot:
             except Exception:
                 pass
 
-        self.log("Launching Chromium browser...")
+        pref_display = config.BROWSER_DISPLAY_NAMES.get(self.browser_choice, self.browser_choice)
+        self.log(f"Launching web browser (Preference: {pref_display})...")
         if self.page:
             try:
                 self.page.close()
@@ -107,40 +116,68 @@ class SLAMBot:
         self.browser = None
 
         # Universal Browser Resolution:
-        # 1. Microsoft Edge (channel="msedge") - standard built-in on Windows 10/11
-        # 2. Google Chrome (channel="chrome")
-        # 3. Direct executable search for Edge / Chrome on Windows (for enterprise/restricted PCs)
-        # 4. Standard Chromium (Playwright cache fallback)
-        attempts = [
-            ("Microsoft Edge", {"channel": "msedge", "headless": self.headless, "slow_mo": 50, "args": launch_args}),
-            ("Google Chrome", {"channel": "chrome", "headless": self.headless, "slow_mo": 50, "args": launch_args}),
-        ]
+        detected = config.detect_system_browsers()
+        edge_info = detected["browsers"].get("msedge", {})
+        chrome_info = detected["browsers"].get("chrome", {})
+        brave_info = detected["browsers"].get("brave", {})
+        win_def = detected.get("windows_default")
 
-        if sys.platform == "win32":
-            candidate_exes = [
-                os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"),
-                os.path.expandvars(r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"),
-                os.path.expandvars(r"%LocalAppData%\Microsoft\Edge\Application\msedge.exe"),
-                os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
-                os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
-                os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
-            ]
-            for exe in candidate_exes:
-                if os.path.isfile(exe):
-                    attempts.append((f"Installed Browser ({os.path.basename(exe)})", {"executable_path": exe, "headless": self.headless, "slow_mo": 50, "args": launch_args}))
-                    break
+        attempts = []
+        choice = (self.browser_choice or config.BROWSER_CHOICE_AUTO).lower()
 
-        attempts.append(("Chromium", {"headless": self.headless, "slow_mo": 50, "args": launch_args}))
+        if choice == config.BROWSER_CHOICE_EDGE:
+            attempts.append(("Microsoft Edge", {"channel": "msedge", "headless": self.headless, "slow_mo": 50, "args": launch_args}))
+            if edge_info.get("installed") and edge_info.get("path"):
+                attempts.append(("Microsoft Edge (Direct)", {"executable_path": edge_info["path"], "headless": self.headless, "slow_mo": 50, "args": launch_args}))
+        elif choice == config.BROWSER_CHOICE_CHROME:
+            attempts.append(("Google Chrome", {"channel": "chrome", "headless": self.headless, "slow_mo": 50, "args": launch_args}))
+            if chrome_info.get("installed") and chrome_info.get("path"):
+                attempts.append(("Google Chrome (Direct)", {"executable_path": chrome_info["path"], "headless": self.headless, "slow_mo": 50, "args": launch_args}))
+        elif choice == config.BROWSER_CHOICE_BRAVE:
+            if brave_info.get("installed") and brave_info.get("path"):
+                attempts.append(("Brave Browser", {"executable_path": brave_info["path"], "headless": self.headless, "slow_mo": 50, "args": launch_args}))
+            else:
+                self.log("Brave Browser not found in standard paths. Trying auto-fallbacks...")
+        elif choice == config.BROWSER_CHOICE_CUSTOM:
+            if self.custom_browser_path and os.path.isfile(self.custom_browser_path):
+                attempts.append((f"Custom Browser ({os.path.basename(self.custom_browser_path)})", {"executable_path": self.custom_browser_path, "headless": self.headless, "slow_mo": 50, "args": launch_args}))
+            else:
+                self.log(f"Custom browser executable not found at '{self.custom_browser_path}'. Trying auto-fallbacks...")
+        elif choice == config.BROWSER_CHOICE_CHROMIUM:
+            attempts.append(("Chromium", {"headless": self.headless, "slow_mo": 50, "args": launch_args}))
+        else: # auto / default
+            if win_def and win_def[0] == "chrome":
+                attempts.append(("Google Chrome (Default)", {"channel": "chrome", "headless": self.headless, "slow_mo": 50, "args": launch_args}))
+                attempts.append(("Microsoft Edge", {"channel": "msedge", "headless": self.headless, "slow_mo": 50, "args": launch_args}))
+            elif win_def and win_def[0] == "msedge":
+                attempts.append(("Microsoft Edge (Default)", {"channel": "msedge", "headless": self.headless, "slow_mo": 50, "args": launch_args}))
+                attempts.append(("Google Chrome", {"channel": "chrome", "headless": self.headless, "slow_mo": 50, "args": launch_args}))
+            elif win_def and win_def[0] == "brave" and brave_info.get("installed") and brave_info.get("path"):
+                attempts.append(("Brave Browser (Default)", {"executable_path": brave_info["path"], "headless": self.headless, "slow_mo": 50, "args": launch_args}))
+                attempts.append(("Microsoft Edge", {"channel": "msedge", "headless": self.headless, "slow_mo": 50, "args": launch_args}))
+                attempts.append(("Google Chrome", {"channel": "chrome", "headless": self.headless, "slow_mo": 50, "args": launch_args}))
+            else:
+                attempts.append(("Microsoft Edge", {"channel": "msedge", "headless": self.headless, "slow_mo": 50, "args": launch_args}))
+                attempts.append(("Google Chrome", {"channel": "chrome", "headless": self.headless, "slow_mo": 50, "args": launch_args}))
+
+        # Add robust universal fallbacks
+        if edge_info.get("installed") and edge_info.get("path") and not any("Edge" in a[0] for a in attempts):
+            attempts.append(("Microsoft Edge Fallback", {"executable_path": edge_info["path"], "headless": self.headless, "slow_mo": 50, "args": launch_args}))
+        if chrome_info.get("installed") and chrome_info.get("path") and not any("Chrome" in a[0] for a in attempts):
+            attempts.append(("Google Chrome Fallback", {"executable_path": chrome_info["path"], "headless": self.headless, "slow_mo": 50, "args": launch_args}))
+        if not any(a[0] == "Chromium" for a in attempts):
+            attempts.append(("Chromium Fallback", {"headless": self.headless, "slow_mo": 50, "args": launch_args}))
 
         last_err = None
         for browser_name, launch_opts in attempts:
             try:
                 self.browser = self.playwright.chromium.launch(**launch_opts)
+                self.current_browser_launched = browser_name
                 self.log(f"Launched {browser_name} browser successfully.")
                 break
             except Exception as e:
                 last_err = e
-                self.log(f"{browser_name} not available. Trying fallback...")
+                self.log(f"{browser_name} not available: {e}. Trying fallback...")
 
         if not self.browser:
             raise RuntimeError(

@@ -7,7 +7,7 @@ import json
 from datetime import datetime
 
 # Application Version & GitHub Releases
-APP_VERSION = "1.0.7"
+APP_VERSION = "1.0.8"
 GITHUB_REPO = "Redpheonix024/slamautofillbot"
 GITHUB_RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
@@ -130,6 +130,133 @@ def save_all_sec_preferences(sections: list):
     s = load_settings()
     s["all_sec_included"] = [sec for sec in sections if sec in SECTION_IDS]
     save_settings(s)
+
+
+# Browser Automation Settings & Detection
+BROWSER_CHOICE_AUTO = "auto"
+BROWSER_CHOICE_EDGE = "msedge"
+BROWSER_CHOICE_CHROME = "chrome"
+BROWSER_CHOICE_BRAVE = "brave"
+BROWSER_CHOICE_CHROMIUM = "chromium"
+BROWSER_CHOICE_CUSTOM = "custom"
+
+BROWSER_CHOICES = [
+    BROWSER_CHOICE_AUTO,
+    BROWSER_CHOICE_EDGE,
+    BROWSER_CHOICE_CHROME,
+    BROWSER_CHOICE_BRAVE,
+    BROWSER_CHOICE_CHROMIUM,
+    BROWSER_CHOICE_CUSTOM,
+]
+
+BROWSER_DISPLAY_NAMES = {
+    BROWSER_CHOICE_AUTO: "Auto-Detect / System Default",
+    BROWSER_CHOICE_EDGE: "Microsoft Edge",
+    BROWSER_CHOICE_CHROME: "Google Chrome",
+    BROWSER_CHOICE_BRAVE: "Brave Browser",
+    BROWSER_CHOICE_CHROMIUM: "Playwright Chromium",
+    BROWSER_CHOICE_CUSTOM: "Custom Browser Executable",
+}
+
+def get_browser_preference() -> dict:
+    """
+    Returns dict:
+      {
+         'choice': 'auto' | 'msedge' | 'chrome' | 'brave' | 'chromium' | 'custom',
+         'custom_path': str
+      }
+    """
+    s = load_settings()
+    choice = s.get("browser_choice", BROWSER_CHOICE_AUTO)
+    if choice not in BROWSER_DISPLAY_NAMES:
+        choice = BROWSER_CHOICE_AUTO
+    return {
+        "choice": choice,
+        "custom_path": s.get("custom_browser_path", "")
+    }
+
+def save_browser_preference(choice: str, custom_path: str = ""):
+    """Saves browser preferences persistently in user_settings.json."""
+    s = load_settings()
+    if choice in BROWSER_DISPLAY_NAMES:
+        s["browser_choice"] = choice
+    if custom_path is not None:
+        s["custom_browser_path"] = custom_path.strip()
+    save_settings(s)
+
+def detect_system_browsers() -> dict:
+    """
+    Detects installed Chromium-based browsers on Windows and identifies the system default browser.
+    Returns:
+        {
+            'windows_default': ('chrome' | 'msedge' | 'brave' | 'firefox' | 'unknown', 'Display Name') or None,
+            'browsers': {
+                'msedge': {'label': 'Microsoft Edge', 'installed': bool, 'path': Optional[str]},
+                'chrome': {'label': 'Google Chrome', 'installed': bool, 'path': Optional[str]},
+                'brave': {'label': 'Brave Browser', 'installed': bool, 'path': Optional[str]},
+            }
+        }
+    """
+    res = {
+        "windows_default": None,
+        "browsers": {
+            "msedge": {"label": "Microsoft Edge", "installed": False, "path": None},
+            "chrome": {"label": "Google Chrome", "installed": False, "path": None},
+            "brave": {"label": "Brave Browser", "installed": False, "path": None},
+        }
+    }
+
+    if sys.platform == "win32":
+        try:
+            import winreg
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice"
+            ) as k:
+                prog_id, _ = winreg.QueryValueEx(k, "ProgId")
+                prog_lower = str(prog_id).lower()
+                if "chrome" in prog_lower:
+                    res["windows_default"] = ("chrome", "Google Chrome")
+                elif "edge" in prog_lower or "msedge" in prog_lower:
+                    res["windows_default"] = ("msedge", "Microsoft Edge")
+                elif "brave" in prog_lower:
+                    res["windows_default"] = ("brave", "Brave Browser")
+                elif "firefox" in prog_lower:
+                    res["windows_default"] = ("firefox", "Mozilla Firefox")
+                else:
+                    res["windows_default"] = ("unknown", str(prog_id))
+        except Exception:
+            pass
+
+        candidates = {
+            "msedge": [
+                r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe",
+                r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe",
+                r"%LocalAppData%\Microsoft\Edge\Application\msedge.exe",
+            ],
+            "chrome": [
+                r"%ProgramFiles%\Google\Chrome\Application\chrome.exe",
+                r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe",
+                r"%LocalAppData%\Google\Chrome\Application\chrome.exe",
+            ],
+            "brave": [
+                r"%ProgramFiles%\BraveSoftware\Brave-Browser\Application\brave.exe",
+                r"%ProgramFiles(x86)%\BraveSoftware\Brave-Browser\Application\brave.exe",
+                r"%LocalAppData%\BraveSoftware\Brave-Browser\Application\brave.exe",
+            ]
+        }
+
+        for key, paths in candidates.items():
+            found = None
+            for p in paths:
+                expanded = os.path.expandvars(p)
+                if os.path.isfile(expanded):
+                    found = expanded
+                    break
+            res["browsers"][key]["installed"] = (found is not None)
+            res["browsers"][key]["path"] = found
+
+    return res
 
 
 # Jobcard Form Default Settings

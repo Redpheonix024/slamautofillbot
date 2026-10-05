@@ -558,23 +558,33 @@ class VerificationDialog(tk.Toplevel):
             self.grab_release()
         except Exception:
             pass
-class AllSecPreferencesDialog(tk.Toplevel):
+class PreferencesDialog(tk.Toplevel):
     """
-    Dedicated preferences modal dialog allowing the user to configure which SLAM sections
-    receive bookings when 'All Sec' is detected in the Excel sheet.
+    Comprehensive Preferences Modal Dialog:
+    - Tab 1: 🌐 Web Browser Configuration (Default Browser, Detection, Custom Exe, Test Launch, Options)
+    - Tab 2: ⭐ 'All Sec' Section Mapping Preferences (Configurable target sections with presets)
     """
-    def __init__(self, parent, gui_ref: Optional[Any] = None):
+    def __init__(self, parent, gui_ref: Optional[Any] = None, initial_tab: int = 0):
         super().__init__(parent)
         self.gui_ref = gui_ref
         if self.gui_ref:
             self.gui_ref._active_modal = self
         self.transient(parent)
-        self.title("⚙️ 'All Sec' Section Mapping Preferences")
-        self.geometry("640x550")
-        self.minsize(580, 480)
+        self.title("⚙️ Application Preferences - SLAM Auto-Filler")
+        self.geometry("680x640")
+        self.minsize(620, 560)
         self.result = False
 
+        self._initial_tab = initial_tab
         self._check_vars: Dict[str, tk.BooleanVar] = {}
+
+        # Browser settings state
+        self._browser_choice_var = tk.StringVar(value=config.BROWSER_CHOICE_AUTO)
+        self._custom_path_var = tk.StringVar(value="")
+        self._headless_pref_var = tk.BooleanVar(value=False)
+        self._keep_browser_pref_var = tk.BooleanVar(value=True)
+
+        self._load_current_settings()
         self._build_ui()
 
         self.update_idletasks()
@@ -588,6 +598,15 @@ class AllSecPreferencesDialog(tk.Toplevel):
         self.grab_set()
         force_bring_to_front(self)
         self.protocol("WM_DELETE_WINDOW", self._on_cancel)
+
+    def _load_current_settings(self):
+        b_pref = config.get_browser_preference()
+        self._browser_choice_var.set(b_pref.get("choice", config.BROWSER_CHOICE_AUTO))
+        self._custom_path_var.set(b_pref.get("custom_path", ""))
+
+        if self.gui_ref:
+            self._headless_pref_var.set(self.gui_ref.headless_var.get())
+            self._keep_browser_pref_var.set(self.gui_ref.keep_browser_var.get())
 
     def _on_cancel(self):
         if hasattr(self, "gui_ref") and self.gui_ref:
@@ -605,7 +624,7 @@ class AllSecPreferencesDialog(tk.Toplevel):
 
         tk.Label(
             banner,
-            text="⚙️ 'All Sec' Section Mapping Preferences",
+            text="⚙️ Application Preferences",
             font=("Segoe UI", 13, "bold"),
             fg="white",
             bg="#1a365d"
@@ -613,19 +632,294 @@ class AllSecPreferencesDialog(tk.Toplevel):
 
         tk.Label(
             banner,
-            text="Choose which SLAM sections are assigned when 'All Sec' appears in Excel.",
+            text="Configure default web browser, automation options, and 'All Sec' section mapping rules.",
             font=("Segoe UI", 9),
             fg="#90cdf4",
             bg="#1a365d"
         ).pack(anchor=tk.W, padx=16, pady=(0, 10))
 
-        # Main Container
-        content = ttk.Frame(self, padding=12)
-        content.pack(fill=tk.BOTH, expand=True)
+        # Main Notebook (Tabs)
+        self.notebook = ttk.Notebook(self)
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=12, pady=(10, 4))
 
-        # 2. Rule Info Card
-        info_card = ttk.LabelFrame(content, text=" ℹ️ Rule Explanation ", padding=8)
-        info_card.pack(fill=tk.X, pady=(0, 10))
+        # Tab 1: Browser Settings
+        tab_browser = ttk.Frame(self.notebook, padding=10)
+        self.notebook.add(tab_browser, text=" 🌐 Web Browser ")
+
+        # Tab 2: 'All Sec' Mapping
+        tab_all_sec = ttk.Frame(self.notebook, padding=10)
+        self.notebook.add(tab_all_sec, text=" ⭐ 'All Sec' Mapping ")
+
+        self._build_browser_tab(tab_browser)
+        self._build_all_sec_tab(tab_all_sec)
+
+        try:
+            self.notebook.select(self._initial_tab)
+        except Exception:
+            pass
+
+        # Bottom Button Bar
+        btn_bar = ttk.Frame(self, padding=(12, 6, 12, 10))
+        btn_bar.pack(fill=tk.X, side=tk.BOTTOM)
+
+        save_btn = tk.Button(
+            btn_bar,
+            text="💾 Save Preferences",
+            font=("Segoe UI", 10, "bold"),
+            bg="#2f855a",
+            fg="white",
+            activebackground="#276749",
+            activeforeground="white",
+            padx=16,
+            pady=6,
+            cursor="hand2",
+            command=self._on_save
+        )
+        save_btn.pack(side=tk.LEFT, padx=(0, 8))
+
+        reset_btn = tk.Button(
+            btn_bar,
+            text="↺ Reset All Defaults",
+            font=("Segoe UI", 9),
+            bg="#edf2f7",
+            activebackground="#e2e8f0",
+            padx=12,
+            pady=6,
+            cursor="hand2",
+            command=self._apply_all_defaults
+        )
+        reset_btn.pack(side=tk.LEFT, padx=(0, 8))
+
+        cancel_btn = tk.Button(
+            btn_bar,
+            text="Cancel",
+            font=("Segoe UI", 9),
+            bg="#e2e8f0",
+            activebackground="#cbd5e0",
+            padx=12,
+            pady=6,
+            cursor="hand2",
+            command=self._on_cancel
+        )
+        cancel_btn.pack(side=tk.LEFT)
+
+    def _build_browser_tab(self, parent):
+        detected = config.detect_system_browsers()
+        edge_info = detected["browsers"].get("msedge", {})
+        chrome_info = detected["browsers"].get("chrome", {})
+        brave_info = detected["browsers"].get("brave", {})
+        win_def = detected.get("windows_default")
+        win_def_name = win_def[1] if win_def else "Standard Windows Browser"
+
+        # 1. Browser Selection Frame
+        sel_frame = ttk.LabelFrame(parent, text=" 🎯 Default Web Browser Selection ", padding=8)
+        sel_frame.pack(fill=tk.X, pady=(0, 8))
+
+        options = [
+            (
+                config.BROWSER_CHOICE_AUTO,
+                f"Auto-Detect / System Default (Recommended)",
+                f"Prioritizes your Windows default ({win_def_name}) if supported, or falls back to Edge → Chrome."
+            ),
+            (
+                config.BROWSER_CHOICE_EDGE,
+                f"Microsoft Edge  {'[Installed]' if edge_info.get('installed') else '[Not Detected]'}",
+                f"Uses Microsoft Edge (pre-installed on Windows 10/11)."
+            ),
+            (
+                config.BROWSER_CHOICE_CHROME,
+                f"Google Chrome  {'[Installed]' if chrome_info.get('installed') else '[Not Detected]'}",
+                f"Uses Google Chrome browser."
+            ),
+            (
+                config.BROWSER_CHOICE_BRAVE,
+                f"Brave Browser  {'[Installed]' if brave_info.get('installed') else '[Not Detected]'}",
+                f"Uses Brave Browser (Chromium-based privacy browser)."
+            ),
+            (
+                config.BROWSER_CHOICE_CHROMIUM,
+                f"Playwright Chromium  [Bundled Engine]",
+                f"Uses Playwright's built-in standalone Chromium build."
+            ),
+            (
+                config.BROWSER_CHOICE_CUSTOM,
+                f"Custom Browser Executable (.exe)...",
+                f"Specify a custom Chromium-based browser executable."
+            ),
+        ]
+
+        for val, title, desc in options:
+            rb_frame = ttk.Frame(sel_frame)
+            rb_frame.pack(fill=tk.X, pady=2)
+
+            rb = ttk.Radiobutton(
+                rb_frame,
+                text=title,
+                value=val,
+                variable=self._browser_choice_var,
+                command=self._on_browser_choice_change
+            )
+            rb.pack(anchor=tk.W)
+
+            sub_lbl = tk.Label(
+                rb_frame,
+                text=f"    {desc}",
+                font=("Segoe UI", 8),
+                fg="#718096"
+            )
+            sub_lbl.pack(anchor=tk.W)
+
+        # Custom Path Entry
+        self.custom_path_frame = ttk.Frame(sel_frame)
+        self.custom_path_frame.pack(fill=tk.X, pady=(4, 2), padx=(22, 0))
+
+        ttk.Label(self.custom_path_frame, text="Path:", font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(0, 6))
+        self.custom_entry = ttk.Entry(self.custom_path_frame, textvariable=self._custom_path_var, font=("Segoe UI", 9))
+        self.custom_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
+
+        self.browse_btn = ttk.Button(self.custom_path_frame, text="Browse...", command=self._browse_custom_browser)
+        self.browse_btn.pack(side=tk.LEFT)
+
+        self._on_browser_choice_change()
+
+        # 2. System Browser Detection Card
+        det_frame = ttk.LabelFrame(parent, text=" 🔍 Detected Browsers on This System ", padding=8)
+        det_frame.pack(fill=tk.X, pady=(0, 8))
+
+        det_grid = ttk.Frame(det_frame)
+        det_grid.pack(fill=tk.X)
+
+        tk.Label(det_grid, text="🖥️ Windows Default:", font=("Segoe UI", 8, "bold"), fg="#2d3748").grid(row=0, column=0, sticky=tk.W, padx=4, pady=1)
+        tk.Label(det_grid, text=f"{win_def_name}", font=("Segoe UI", 8), fg="#2b6cb0").grid(row=0, column=1, sticky=tk.W, padx=4, pady=1)
+
+        tk.Label(det_grid, text="🌐 Microsoft Edge:", font=("Segoe UI", 8, "bold"), fg="#2d3748").grid(row=1, column=0, sticky=tk.W, padx=4, pady=1)
+        edge_status = f"✅ Installed ({edge_info.get('path')})" if edge_info.get("installed") else "❌ Not Found"
+        tk.Label(det_grid, text=edge_status, font=("Segoe UI", 8), fg="#276749" if edge_info.get("installed") else "#c53030").grid(row=1, column=1, sticky=tk.W, padx=4, pady=1)
+
+        tk.Label(det_grid, text="🌐 Google Chrome:", font=("Segoe UI", 8, "bold"), fg="#2d3748").grid(row=2, column=0, sticky=tk.W, padx=4, pady=1)
+        chrome_status = f"✅ Installed ({chrome_info.get('path')})" if chrome_info.get("installed") else "❌ Not Found"
+        tk.Label(det_grid, text=chrome_status, font=("Segoe UI", 8), fg="#276749" if chrome_info.get("installed") else "#c53030").grid(row=2, column=1, sticky=tk.W, padx=4, pady=1)
+
+        tk.Label(det_grid, text="🦁 Brave Browser:", font=("Segoe UI", 8, "bold"), fg="#2d3748").grid(row=3, column=0, sticky=tk.W, padx=4, pady=1)
+        brave_status = f"✅ Installed ({brave_info.get('path')})" if brave_info.get("installed") else "❌ Not Found"
+        tk.Label(det_grid, text=brave_status, font=("Segoe UI", 8), fg="#276749" if brave_info.get("installed") else "#718096").grid(row=3, column=1, sticky=tk.W, padx=4, pady=1)
+
+        # 3. Launch Diagnostics & Test Action
+        diag_frame = ttk.LabelFrame(parent, text=" ⚡ Diagnostics & Test ", padding=8)
+        diag_frame.pack(fill=tk.X)
+
+        test_row = ttk.Frame(diag_frame)
+        test_row.pack(fill=tk.X)
+
+        self.test_btn = tk.Button(
+            test_row,
+            text="🚀 Test Launch Selected Browser",
+            font=("Segoe UI", 9, "bold"),
+            bg="#ebf8ff",
+            fg="#2b6cb0",
+            activebackground="#bee3f8",
+            padx=10,
+            pady=4,
+            cursor="hand2",
+            command=self._test_launch_browser
+        )
+        self.test_btn.pack(side=tk.LEFT, padx=(0, 10))
+
+        self.test_status_lbl = tk.Label(
+            test_row,
+            text="Click to test that the selected browser can launch without errors.",
+            font=("Segoe UI", 8, "italic"),
+            fg="#4a5568"
+        )
+        self.test_status_lbl.pack(side=tk.LEFT)
+
+    def _browse_custom_browser(self):
+        f = filedialog.askopenfilename(
+            parent=self,
+            title="Select Browser Executable",
+            filetypes=[("Executable Files", "*.exe"), ("All Files", "*.*")]
+        )
+        if f:
+            self._custom_path_var.set(f)
+            self._browser_choice_var.set(config.BROWSER_CHOICE_CUSTOM)
+            self._on_browser_choice_change()
+
+    def _on_browser_choice_change(self):
+        is_custom = (self._browser_choice_var.get() == config.BROWSER_CHOICE_CUSTOM)
+        state = tk.NORMAL if is_custom else tk.DISABLED
+        self.custom_entry.config(state=state)
+        self.browse_btn.config(state=state)
+
+    def _test_launch_browser(self):
+        choice = self._browser_choice_var.get()
+        custom_path = self._custom_path_var.get().strip()
+
+        if choice == config.BROWSER_CHOICE_CUSTOM and (not custom_path or not os.path.isfile(custom_path)):
+            messagebox.showwarning(
+                "Custom Path Required",
+                "Please browse or specify a valid .exe path for your Custom Browser before testing.",
+                parent=self
+            )
+            return
+
+        self.test_btn.config(state=tk.DISABLED, text="⏳ Testing Launch...")
+        self.test_status_lbl.config(text="Launching browser...", fg="#2b6cb0")
+
+        def _worker():
+            try:
+                from slam_bot import SLAMBot
+                bot = SLAMBot(
+                    headless=self._headless_pref_var.get(),
+                    browser_choice=choice,
+                    custom_browser_path=custom_path
+                )
+                bot.start_browser()
+                import time
+                time.sleep(2.0)
+                bot_launched_name = bot.current_browser_launched or "Browser"
+                bot.stop()
+                try:
+                    if bot.page:
+                        bot.page.close()
+                    if bot.context:
+                        bot.context.close()
+                    if bot.browser:
+                        bot.browser.close()
+                except Exception:
+                    pass
+
+                def _success():
+                    self.test_btn.config(state=tk.NORMAL, text="🚀 Test Launch Selected Browser")
+                    self.test_status_lbl.config(
+                        text=f"✅ Success! {bot_launched_name} launched and closed cleanly.",
+                        fg="#22543d"
+                    )
+                    messagebox.showinfo(
+                        "Browser Test Succeeded",
+                        f"🎉 Success!\n\n{bot_launched_name} launched and closed cleanly without errors.",
+                        parent=self
+                    )
+                self.after(0, _success)
+            except Exception as e:
+                def _fail(err=e):
+                    self.test_btn.config(state=tk.NORMAL, text="🚀 Test Launch Selected Browser")
+                    self.test_status_lbl.config(
+                        text=f"❌ Launch failed: {str(err)[:50]}...",
+                        fg="#9b2c2c"
+                    )
+                    messagebox.showerror(
+                        "Browser Test Failed",
+                        f"Could not launch browser:\n\n{err}",
+                        parent=self
+                    )
+                self.after(0, _fail)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _build_all_sec_tab(self, parent):
+        # 1. Rule Info Card
+        info_card = ttk.LabelFrame(parent, text=" ℹ️ Rule Explanation ", padding=8)
+        info_card.pack(fill=tk.X, pady=(0, 8))
 
         tk.Label(
             info_card,
@@ -637,9 +931,9 @@ class AllSecPreferencesDialog(tk.Toplevel):
             justify=tk.LEFT
         ).pack(anchor=tk.W)
 
-        # 3. Checkbox Grid Frame
-        grid_frame = ttk.LabelFrame(content, text=" 🎯 Select Target Sections for 'All Sec' ", padding=8)
-        grid_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        # 2. Checkbox Grid Frame
+        grid_frame = ttk.LabelFrame(parent, text=" 🎯 Select Target Sections for 'All Sec' ", padding=8)
+        grid_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
 
         current_saved = set(config.get_all_sec_preferences())
 
@@ -675,11 +969,11 @@ class AllSecPreferencesDialog(tk.Toplevel):
 
             cb_text = sec_descriptions.get(sec, sec)
             cb = ttk.Checkbutton(parent_col, text=cb_text, variable=var)
-            cb.pack(anchor=tk.W, pady=3)
+            cb.pack(anchor=tk.W, pady=2)
 
-        # 4. Quick Presets Toolbar
-        presets_frame = ttk.Frame(content)
-        presets_frame.pack(fill=tk.X, pady=(0, 8))
+        # 3. Quick Presets Toolbar
+        presets_frame = ttk.Frame(parent)
+        presets_frame.pack(fill=tk.X, pady=(0, 6))
 
         default_btn = tk.Button(
             presets_frame,
@@ -701,9 +995,9 @@ class AllSecPreferencesDialog(tk.Toplevel):
         none_btn = ttk.Button(presets_frame, text="☐ Clear All", command=self._clear_all)
         none_btn.pack(side=tk.LEFT)
 
-        # 5. Live Summary Banner
-        self.summary_frame = tk.Frame(content, bg="#f7fafc", relief=tk.SOLID, borderwidth=1, padx=8, pady=6)
-        self.summary_frame.pack(fill=tk.X, pady=(0, 10))
+        # 4. Live Summary Banner
+        self.summary_frame = tk.Frame(parent, bg="#f7fafc", relief=tk.SOLID, borderwidth=1, padx=8, pady=4)
+        self.summary_frame.pack(fill=tk.X)
 
         self.summary_lbl = tk.Label(
             self.summary_frame,
@@ -715,38 +1009,6 @@ class AllSecPreferencesDialog(tk.Toplevel):
         self.summary_lbl.pack(anchor=tk.W)
 
         self._update_summary()
-
-        # 6. Action Buttons Bar
-        btn_bar = ttk.Frame(content)
-        btn_bar.pack(fill=tk.X, side=tk.BOTTOM)
-
-        save_btn = tk.Button(
-            btn_bar,
-            text="💾 Save Preferences",
-            font=("Segoe UI", 10, "bold"),
-            bg="#2f855a",
-            fg="white",
-            activebackground="#276749",
-            activeforeground="white",
-            padx=16,
-            pady=6,
-            cursor="hand2",
-            command=self._on_save
-        )
-        save_btn.pack(side=tk.LEFT, padx=(0, 8))
-
-        cancel_btn = tk.Button(
-            btn_bar,
-            text="Cancel",
-            font=("Segoe UI", 9),
-            bg="#e2e8f0",
-            activebackground="#cbd5e0",
-            padx=12,
-            pady=6,
-            cursor="hand2",
-            command=self._on_cancel
-        )
-        cancel_btn.pack(side=tk.LEFT)
 
     def _apply_default_preset(self):
         default_secs = set(config.DEFAULT_ALL_SEC_INCLUDED)
@@ -773,24 +1035,56 @@ class AllSecPreferencesDialog(tk.Toplevel):
             text=f"Selected ({len(selected)}/12): {sel_text}\nExcluded ({len(excluded)}): {excl_text}"
         )
 
+    def _apply_all_defaults(self):
+        self._browser_choice_var.set(config.BROWSER_CHOICE_AUTO)
+        self._custom_path_var.set("")
+        self._on_browser_choice_change()
+        self._apply_default_preset()
+
     def _on_save(self):
+        choice = self._browser_choice_var.get()
+        custom_path = self._custom_path_var.get().strip()
+
+        if choice == config.BROWSER_CHOICE_CUSTOM and (not custom_path or not os.path.isfile(custom_path)):
+            if not messagebox.askyesno(
+                "Invalid Custom Browser Path",
+                "The custom browser path does not point to an existing .exe file.\n\nSave anyway (will fall back to Auto-Detect)?",
+                parent=self
+            ):
+                return
+
+        config.save_browser_preference(choice, custom_path)
+
         selected = self._get_selected_sections()
         if not selected:
-            if not messagebox.askyesno("No Sections Selected", "You have not selected any sections for 'All Sec'.\n\nDo you want to save anyway? (Observations with 'All Sec' will be skipped).", parent=self):
+            if not messagebox.askyesno(
+                "No Sections Selected",
+                "You have not selected any sections for 'All Sec'.\n\nDo you want to save anyway? (Observations with 'All Sec' will be skipped).",
+                parent=self
+            ):
                 return
 
         config.save_all_sec_preferences(selected)
+
         if self.gui_ref:
-            self.gui_ref._reapply_all_sec_preferences()
-            self.gui_ref.log(f"Preferences saved: 'All Sec' maps to {len(selected)} sections: {', '.join(selected)}")
+            self.gui_ref._sync_preferences()
+            b_name = config.BROWSER_DISPLAY_NAMES.get(choice, choice)
+            self.gui_ref.log(f"Preferences saved: Browser = {b_name}, 'All Sec' = {len(selected)} sections ({', '.join(selected)})")
             self.gui_ref._active_modal = None
 
         messagebox.showinfo(
             "Preferences Saved",
-            f"Successfully saved 'All Sec' preferences!\n\nTarget Sections ({len(selected)}):\n{', '.join(selected) if selected else 'None'}",
+            f"Successfully saved preferences!\n\n"
+            f"• Default Browser: {config.BROWSER_DISPLAY_NAMES.get(choice, choice)}\n"
+            f"• 'All Sec' Target Sections ({len(selected)}):\n  {', '.join(selected) if selected else 'None'}",
             parent=self
         )
         self.destroy()
+
+class AllSecPreferencesDialog(PreferencesDialog):
+    """Backwards-compatible alias for opening Preferences directly to 'All Sec' tab."""
+    def __init__(self, parent, gui_ref: Optional[Any] = None):
+        super().__init__(parent, gui_ref=gui_ref, initial_tab=1)
 
 class EditBookingDialog(tk.Toplevel):
     """
@@ -1055,6 +1349,8 @@ class SLAMBotWorker(threading.Thread):
                 parsed_data = task.get("parsed_data")
                 params = task["params"]
                 try:
+                    b_choice = params.get("browser_choice")
+                    c_path = params.get("custom_browser_path")
                     if self.bot is None:
                         self.bot = SLAMBot(
                             username=params["username"],
@@ -1064,6 +1360,8 @@ class SLAMBotWorker(threading.Thread):
                             obs_type=params["obs_type"],
                             job_kind=params["job_kind"],
                             headless=params["headless"],
+                            browser_choice=b_choice,
+                            custom_browser_path=c_path,
                             log_callback=self.gui.log,
                             otp_callback=self.gui._prompt_otp,
                             progress_callback=self.gui._update_progress,
@@ -1084,6 +1382,27 @@ class SLAMBotWorker(threading.Thread):
                         self.bot.verify_before_save = True
                         self.bot.verify_callback = self.gui._prompt_verify
                         self.bot._stop_requested = False
+
+                        # If user changed browser choice while browser is already open, cleanly reopen
+                        old_b_choice = getattr(self.bot, "browser_choice", None)
+                        if old_b_choice != b_choice:
+                            self.gui.log(f"Browser preference changed ({old_b_choice} -> {b_choice}). Closing previous browser session...")
+                            try:
+                                if self.bot.page:
+                                    self.bot.page.close()
+                                if self.bot.context:
+                                    self.bot.context.close()
+                                if self.bot.browser:
+                                    self.bot.browser.close()
+                            except Exception:
+                                pass
+                            self.bot.page = None
+                            self.bot.context = None
+                            self.bot.browser = None
+                            self.bot.is_logged_in = False
+
+                        self.bot.browser_choice = b_choice
+                        self.bot.custom_browser_path = c_path
 
                         if self.bot.browser and self.bot.browser.is_connected() and self.bot.page and not self.bot.page.is_closed():
                             self.gui.log("Reusing existing open browser session...")
@@ -1217,7 +1536,7 @@ class SLAMAutoFillerGUI:
 
         self._apply_window_icon()
         self._build_ui()
-        self._update_all_sec_badge()
+        self._sync_preferences()
         self._update_otp_status()
         self._scan_desktop_files()
         self.root.protocol("WM_DELETE_WINDOW", self._on_app_close)
@@ -1602,11 +1921,25 @@ class SLAMAutoFillerGUI:
         reset_btn = ttk.Button(s_row2, text="↺ Reset Defaults", command=self._reset_settings_defaults)
         reset_btn.pack(side=tk.LEFT, padx=4)
 
-        # 3b. 'All Sec' Section Mapping Preferences Bar
+        # 3b. Browser Selection & Preferences Toolbar
         s_row3 = ttk.Frame(settings_frame)
         s_row3.pack(fill=tk.X, pady=(6, 2))
 
-        ttk.Label(s_row3, text="⭐ 'All Sec' Rule:", width=16, font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT)
+        ttk.Label(s_row3, text="🌐 Browser:", width=11, font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT)
+        self.browser_var = tk.StringVar(value="")
+        browser_names = [config.BROWSER_DISPLAY_NAMES[k] for k in config.BROWSER_CHOICES]
+        self.browser_cb = ttk.Combobox(
+            s_row3,
+            textvariable=self.browser_var,
+            values=browser_names,
+            state="readonly",
+            width=26,
+            font=("Segoe UI", 9)
+        )
+        self.browser_cb.pack(side=tk.LEFT, padx=(0, 14))
+        self.browser_cb.bind("<<ComboboxSelected>>", self._on_browser_combobox_changed)
+
+        ttk.Label(s_row3, text="⭐ 'All Sec':", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=(0, 4))
         self.all_sec_badge_var = tk.StringVar(value="")
         self.all_sec_badge_lbl = tk.Label(
             s_row3,
@@ -1621,7 +1954,7 @@ class SLAMAutoFillerGUI:
 
         pref_btn = tk.Button(
             s_row3,
-            text="⚙️ 'All Sec' Preferences...",
+            text="⚙️ Preferences...",
             font=("Segoe UI", 8, "bold"),
             bg="#edf2f7",
             fg="#2b6cb0",
@@ -1629,16 +1962,23 @@ class SLAMAutoFillerGUI:
             padx=10,
             pady=2,
             cursor="hand2",
+            command=self._open_preferences
+        )
+        pref_btn.pack(side=tk.LEFT, padx=(0, 6))
+
+        all_sec_btn = tk.Button(
+            s_row3,
+            text="⭐ 'All Sec' Rules...",
+            font=("Segoe UI", 8),
+            bg="#edf2f7",
+            fg="#4a5568",
+            activebackground="#e2e8f0",
+            padx=8,
+            pady=2,
+            cursor="hand2",
             command=self._open_all_sec_preferences
         )
-        pref_btn.pack(side=tk.LEFT)
-
-        tk.Label(
-            s_row3,
-            text="Default: Excludes E8, Q&I, LAB, PPIO (Click to customize)",
-            font=("Segoe UI", 8, "italic"),
-            fg="#4a5568"
-        ).pack(side=tk.LEFT, padx=(10, 0))
+        all_sec_btn.pack(side=tk.LEFT)
 
         # 4. Bookings Preview Table
         table_frame = ttk.LabelFrame(main_container, text=" 📋 Bookings to be Staged into SLAM ", padding=6)
@@ -1829,18 +2169,48 @@ class SLAMAutoFillerGUI:
         self.eqt_req_var.set(config.DEFAULT_EQT_REQUIRED)
         self.obs_type_var.set(config.DEFAULT_OBS_TYPE)
         self.job_kind_var.set(config.DEFAULT_JOB_KIND)
+        self.headless_var.set(False)
+        self.keep_browser_var.set(True)
+        config.save_browser_preference(config.BROWSER_CHOICE_AUTO, "")
         config.save_all_sec_preferences(config.DEFAULT_ALL_SEC_INCLUDED)
+        self._sync_preferences()
+        self.log("Settings reset to RPME defaults (Browser: Auto-Detect | All Sec excludes E8, Q&I, LAB, PPIO).")
+
+    def _get_selected_browser_key(self) -> str:
+        sel = self.browser_var.get()
+        for k, v in config.BROWSER_DISPLAY_NAMES.items():
+            if v == sel:
+                return k
+        return config.BROWSER_CHOICE_AUTO
+
+    def _on_browser_combobox_changed(self, event=None):
+        k = self._get_selected_browser_key()
+        config.save_browser_preference(k)
+        name = config.BROWSER_DISPLAY_NAMES.get(k, k)
+        self.log(f"Default browser updated to: {name}")
+
+    def _open_preferences(self):
+        """Opens the comprehensive Preferences dialog on the Web Browser tab."""
+        PreferencesDialog(self.root, gui_ref=self, initial_tab=0)
+
+    def _open_all_sec_preferences(self):
+        """Opens the modal dialog allowing the user to select target sections for 'All Sec'."""
+        PreferencesDialog(self.root, gui_ref=self, initial_tab=1)
+
+    def _sync_preferences(self):
+        """Synchronizes GUI badges, dropdowns, and active bookings with user_settings.json."""
+        b_pref = config.get_browser_preference()
+        b_choice = b_pref.get("choice", config.BROWSER_CHOICE_AUTO)
+        b_name = config.BROWSER_DISPLAY_NAMES.get(b_choice, "Auto-Detect / System Default")
+        if hasattr(self, "browser_var"):
+            self.browser_var.set(b_name)
+        self._update_all_sec_badge()
         self._reapply_all_sec_preferences()
-        self.log("Settings reset to RPME defaults (Schedule Attention | Without Eq | Testing Remarks | Minor | All Sec excludes E8, Q&I, LAB, PPIO).")
 
     def _update_all_sec_badge(self):
         """Updates the badge in the settings bar displaying current target sections for All Sec."""
         secs = config.get_all_sec_preferences()
         self.all_sec_badge_var.set(f"Targets ({len(secs)}): {', '.join(secs)}")
-
-    def _open_all_sec_preferences(self):
-        """Opens the modal dialog allowing the user to select target sections for 'All Sec'."""
-        AllSecPreferencesDialog(self.root, gui_ref=self)
 
     def _reapply_all_sec_preferences(self):
         """
@@ -2252,7 +2622,9 @@ class SLAMAutoFillerGUI:
                 "obs_type": self.obs_type_var.get(),
                 "job_kind": self.job_kind_var.get(),
                 "headless": self.headless_var.get(),
-                "keep_browser": self.keep_browser_var.get()
+                "keep_browser": self.keep_browser_var.get(),
+                "browser_choice": self._get_selected_browser_key(),
+                "custom_browser_path": config.get_browser_preference().get("custom_path", "")
             }
         })
 
