@@ -25,7 +25,7 @@ import threading
 import queue
 import collections
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Any, List, Dict, Set
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import webbrowser
@@ -558,6 +558,238 @@ class VerificationDialog(tk.Toplevel):
             self.grab_release()
         except Exception:
             pass
+class AllSecPreferencesDialog(tk.Toplevel):
+    """
+    Dedicated preferences modal dialog allowing the user to configure which SLAM sections
+    receive bookings when 'All Sec' is detected in the Excel sheet.
+    """
+    def __init__(self, parent, gui_ref: Optional[Any] = None):
+        super().__init__(parent)
+        self.gui_ref = gui_ref
+        if self.gui_ref:
+            self.gui_ref._active_modal = self
+        self.transient(parent)
+        self.title("⚙️ 'All Sec' Section Mapping Preferences")
+        self.geometry("640x550")
+        self.minsize(580, 480)
+        self.result = False
+
+        self._check_vars: Dict[str, tk.BooleanVar] = {}
+        self._build_ui()
+
+        self.update_idletasks()
+        try:
+            px = parent.winfo_rootx() + (parent.winfo_width() - self.winfo_width()) // 2
+            py = parent.winfo_rooty() + (parent.winfo_height() - self.winfo_height()) // 2
+            self.geometry(f"+{max(0, px)}+{max(0, py)}")
+        except Exception:
+            pass
+
+        self.grab_set()
+        force_bring_to_front(self)
+        self.protocol("WM_DELETE_WINDOW", self._on_cancel)
+
+    def _on_cancel(self):
+        if hasattr(self, "gui_ref") and self.gui_ref:
+            self.gui_ref._active_modal = None
+        try:
+            self.grab_release()
+        except Exception:
+            pass
+        self.destroy()
+
+    def _build_ui(self):
+        # 1. Header Banner
+        banner = tk.Frame(self, bg="#1a365d", height=60)
+        banner.pack(fill=tk.X, side=tk.TOP)
+
+        tk.Label(
+            banner,
+            text="⚙️ 'All Sec' Section Mapping Preferences",
+            font=("Segoe UI", 13, "bold"),
+            fg="white",
+            bg="#1a365d"
+        ).pack(anchor=tk.W, padx=16, pady=(10, 2))
+
+        tk.Label(
+            banner,
+            text="Choose which SLAM sections are assigned when 'All Sec' appears in Excel.",
+            font=("Segoe UI", 9),
+            fg="#90cdf4",
+            bg="#1a365d"
+        ).pack(anchor=tk.W, padx=16, pady=(0, 10))
+
+        # Main Container
+        content = ttk.Frame(self, padding=12)
+        content.pack(fill=tk.BOTH, expand=True)
+
+        # 2. Rule Info Card
+        info_card = ttk.LabelFrame(content, text=" ℹ️ Rule Explanation ", padding=8)
+        info_card.pack(fill=tk.X, pady=(0, 10))
+
+        tk.Label(
+            info_card,
+            text="When an observation row in Excel specifies Section as 'All Sec':\n"
+                 "The bot will automatically stage that observation to all checked sections below.\n"
+                 "Default Rule: Send to all sections EXCEPT E8, Q&I, LAB, PPIO.",
+            font=("Segoe UI", 9),
+            fg="#2d3748",
+            justify=tk.LEFT
+        ).pack(anchor=tk.W)
+
+        # 3. Checkbox Grid Frame
+        grid_frame = ttk.LabelFrame(content, text=" 🎯 Select Target Sections for 'All Sec' ", padding=8)
+        grid_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+
+        current_saved = set(config.get_all_sec_preferences())
+
+        sec_descriptions = {
+            "M1": "M1 (Mechanical 1 - TM / Bogie)",
+            "M2": "M2 (Mechanical 2 - Pneumatic / Mech)",
+            "E3": "E3 (Electrical 3 - Control & Aux)",
+            "E3A": "E3A (Electrical 3A - Cab Equipment)",
+            "E4": "E4 (Electrical 4 - Panto / Roof / VCB)",
+            "E5A": "E5A (Electrical 5A - Electronics)",
+            "E5B": "E5B (Electrical 5B - Inverter / Converter)",
+            "BRS": "BRS (Brake System)",
+            "E8": "E8 (Speedo / Electronic Testing) [Excluded by default]",
+            "QAI": "QAI / Q&I (Quality Assurance) [Excluded by default]",
+            "LAB": "LAB (Chemical & Oil Lab) [Excluded by default]",
+            "PPIO": "PPIO (Planning / Progress) [Excluded by default]"
+        }
+
+        col_left = ttk.Frame(grid_frame)
+        col_left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 8))
+
+        col_right = ttk.Frame(grid_frame)
+        col_right.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(8, 0))
+
+        all_ordered = config.ALL_SECTIONS_LIST
+        midpoint = len(all_ordered) // 2
+
+        for idx, sec in enumerate(all_ordered):
+            parent_col = col_left if idx < midpoint else col_right
+            var = tk.BooleanVar(value=(sec in current_saved))
+            self._check_vars[sec] = var
+            var.trace_add("write", lambda *a: self._update_summary())
+
+            cb_text = sec_descriptions.get(sec, sec)
+            cb = ttk.Checkbutton(parent_col, text=cb_text, variable=var)
+            cb.pack(anchor=tk.W, pady=3)
+
+        # 4. Quick Presets Toolbar
+        presets_frame = ttk.Frame(content)
+        presets_frame.pack(fill=tk.X, pady=(0, 8))
+
+        default_btn = tk.Button(
+            presets_frame,
+            text="⚡ Default (All except E8, Q&I, LAB, PPIO)",
+            font=("Segoe UI", 8, "bold"),
+            bg="#ebf8ff",
+            fg="#2b6cb0",
+            activebackground="#bee3f8",
+            padx=8,
+            pady=3,
+            cursor="hand2",
+            command=self._apply_default_preset
+        )
+        default_btn.pack(side=tk.LEFT, padx=(0, 6))
+
+        all_btn = ttk.Button(presets_frame, text="☑ Select All", command=self._select_all)
+        all_btn.pack(side=tk.LEFT, padx=(0, 6))
+
+        none_btn = ttk.Button(presets_frame, text="☐ Clear All", command=self._clear_all)
+        none_btn.pack(side=tk.LEFT)
+
+        # 5. Live Summary Banner
+        self.summary_frame = tk.Frame(content, bg="#f7fafc", relief=tk.SOLID, borderwidth=1, padx=8, pady=6)
+        self.summary_frame.pack(fill=tk.X, pady=(0, 10))
+
+        self.summary_lbl = tk.Label(
+            self.summary_frame,
+            text="",
+            font=("Segoe UI", 9, "bold"),
+            bg="#f7fafc",
+            fg="#2d3748"
+        )
+        self.summary_lbl.pack(anchor=tk.W)
+
+        self._update_summary()
+
+        # 6. Action Buttons Bar
+        btn_bar = ttk.Frame(content)
+        btn_bar.pack(fill=tk.X, side=tk.BOTTOM)
+
+        save_btn = tk.Button(
+            btn_bar,
+            text="💾 Save Preferences",
+            font=("Segoe UI", 10, "bold"),
+            bg="#2f855a",
+            fg="white",
+            activebackground="#276749",
+            activeforeground="white",
+            padx=16,
+            pady=6,
+            cursor="hand2",
+            command=self._on_save
+        )
+        save_btn.pack(side=tk.LEFT, padx=(0, 8))
+
+        cancel_btn = tk.Button(
+            btn_bar,
+            text="Cancel",
+            font=("Segoe UI", 9),
+            bg="#e2e8f0",
+            activebackground="#cbd5e0",
+            padx=12,
+            pady=6,
+            cursor="hand2",
+            command=self._on_cancel
+        )
+        cancel_btn.pack(side=tk.LEFT)
+
+    def _apply_default_preset(self):
+        default_secs = set(config.DEFAULT_ALL_SEC_INCLUDED)
+        for sec, var in self._check_vars.items():
+            var.set(sec in default_secs)
+
+    def _select_all(self):
+        for var in self._check_vars.values():
+            var.set(True)
+
+    def _clear_all(self):
+        for var in self._check_vars.values():
+            var.set(False)
+
+    def _get_selected_sections(self) -> List[str]:
+        return [sec for sec in config.ALL_SECTIONS_LIST if self._check_vars.get(sec) and self._check_vars[sec].get()]
+
+    def _update_summary(self):
+        selected = self._get_selected_sections()
+        excluded = [s for s in config.ALL_SECTIONS_LIST if s not in selected]
+        sel_text = ", ".join(selected) if selected else "None"
+        excl_text = ", ".join(excluded) if excluded else "None"
+        self.summary_lbl.config(
+            text=f"Selected ({len(selected)}/12): {sel_text}\nExcluded ({len(excluded)}): {excl_text}"
+        )
+
+    def _on_save(self):
+        selected = self._get_selected_sections()
+        if not selected:
+            if not messagebox.askyesno("No Sections Selected", "You have not selected any sections for 'All Sec'.\n\nDo you want to save anyway? (Observations with 'All Sec' will be skipped).", parent=self):
+                return
+
+        config.save_all_sec_preferences(selected)
+        if self.gui_ref:
+            self.gui_ref._reapply_all_sec_preferences()
+            self.gui_ref.log(f"Preferences saved: 'All Sec' maps to {len(selected)} sections: {', '.join(selected)}")
+            self.gui_ref._active_modal = None
+
+        messagebox.showinfo(
+            "Preferences Saved",
+            f"Successfully saved 'All Sec' preferences!\n\nTarget Sections ({len(selected)}):\n{', '.join(selected) if selected else 'None'}",
+            parent=self
+        )
         self.destroy()
 
 class EditBookingDialog(tk.Toplevel):
@@ -665,12 +897,26 @@ class EditBookingDialog(tk.Toplevel):
                 font=("Segoe UI", 8, "bold"),
                 bg="#edf2f7",
                 activebackground="#cbd5e0",
-                padx=6,
+                padx=5,
                 pady=2,
                 cursor="hand2",
                 command=lambda sec=s: self._toggle_section_chip(sec)
             )
-            btn.pack(side=tk.LEFT, padx=3, pady=2)
+            btn.pack(side=tk.LEFT, padx=2, pady=2)
+
+        all_sec_btn = tk.Button(
+            c_grid,
+            text="⭐ All Sec",
+            font=("Segoe UI", 8, "bold"),
+            bg="#feebc8",
+            fg="#7b341e",
+            activebackground="#fbd38d",
+            padx=7,
+            pady=2,
+            cursor="hand2",
+            command=self._set_all_sec
+        )
+        all_sec_btn.pack(side=tk.LEFT, padx=(5, 2), pady=2)
 
         # Mapped Section Preview
         preview_frame = ttk.Frame(container)
@@ -714,6 +960,13 @@ class EditBookingDialog(tk.Toplevel):
 
         self.bind("<Control-Return>", lambda e: self._on_save())
         self.bind("<Escape>", lambda e: self._on_cancel())
+
+    def _set_all_sec(self):
+        curr = self.sec_var.get().strip().upper()
+        if "ALL SEC" in curr:
+            self.sec_var.set("")
+        else:
+            self.sec_var.set("All Sec")
 
     def _toggle_section_chip(self, sec: str):
         from excel_parser import normalize_sections
@@ -964,6 +1217,7 @@ class SLAMAutoFillerGUI:
 
         self._apply_window_icon()
         self._build_ui()
+        self._update_all_sec_badge()
         self._update_otp_status()
         self._scan_desktop_files()
         self.root.protocol("WM_DELETE_WINDOW", self._on_app_close)
@@ -1348,6 +1602,44 @@ class SLAMAutoFillerGUI:
         reset_btn = ttk.Button(s_row2, text="↺ Reset Defaults", command=self._reset_settings_defaults)
         reset_btn.pack(side=tk.LEFT, padx=4)
 
+        # 3b. 'All Sec' Section Mapping Preferences Bar
+        s_row3 = ttk.Frame(settings_frame)
+        s_row3.pack(fill=tk.X, pady=(6, 2))
+
+        ttk.Label(s_row3, text="⭐ 'All Sec' Rule:", width=16, font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT)
+        self.all_sec_badge_var = tk.StringVar(value="")
+        self.all_sec_badge_lbl = tk.Label(
+            s_row3,
+            textvariable=self.all_sec_badge_var,
+            font=("Segoe UI", 8, "bold"),
+            fg="#22543d",
+            bg="#c6f6d5",
+            padx=8,
+            pady=2
+        )
+        self.all_sec_badge_lbl.pack(side=tk.LEFT, padx=(0, 10))
+
+        pref_btn = tk.Button(
+            s_row3,
+            text="⚙️ 'All Sec' Preferences...",
+            font=("Segoe UI", 8, "bold"),
+            bg="#edf2f7",
+            fg="#2b6cb0",
+            activebackground="#e2e8f0",
+            padx=10,
+            pady=2,
+            cursor="hand2",
+            command=self._open_all_sec_preferences
+        )
+        pref_btn.pack(side=tk.LEFT)
+
+        tk.Label(
+            s_row3,
+            text="Default: Excludes E8, Q&I, LAB, PPIO (Click to customize)",
+            font=("Segoe UI", 8, "italic"),
+            fg="#4a5568"
+        ).pack(side=tk.LEFT, padx=(10, 0))
+
         # 4. Bookings Preview Table
         table_frame = ttk.LabelFrame(main_container, text=" 📋 Bookings to be Staged into SLAM ", padding=6)
         table_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
@@ -1537,7 +1829,41 @@ class SLAMAutoFillerGUI:
         self.eqt_req_var.set(config.DEFAULT_EQT_REQUIRED)
         self.obs_type_var.set(config.DEFAULT_OBS_TYPE)
         self.job_kind_var.set(config.DEFAULT_JOB_KIND)
-        self.log("Settings reset to RPME defaults (Schedule Attention | Without Eq | Testing Remarks | Minor).")
+        config.save_all_sec_preferences(config.DEFAULT_ALL_SEC_INCLUDED)
+        self._reapply_all_sec_preferences()
+        self.log("Settings reset to RPME defaults (Schedule Attention | Without Eq | Testing Remarks | Minor | All Sec excludes E8, Q&I, LAB, PPIO).")
+
+    def _update_all_sec_badge(self):
+        """Updates the badge in the settings bar displaying current target sections for All Sec."""
+        secs = config.get_all_sec_preferences()
+        self.all_sec_badge_var.set(f"Targets ({len(secs)}): {', '.join(secs)}")
+
+    def _open_all_sec_preferences(self):
+        """Opens the modal dialog allowing the user to select target sections for 'All Sec'."""
+        AllSecPreferencesDialog(self.root, gui_ref=self)
+
+    def _reapply_all_sec_preferences(self):
+        """
+        When 'All Sec' preferences are updated, refreshes any currently loaded bookings
+        that have raw_section set to 'All Sec'.
+        """
+        self._update_all_sec_badge()
+        if not self.parsed_data or not self.parsed_data.get("bookings"):
+            return
+
+        from excel_parser import is_all_sec_string
+        updated_count = 0
+        all_sec_pref = config.get_all_sec_preferences()
+
+        for b in self.parsed_data["bookings"]:
+            raw = b.get("raw_section", "")
+            if is_all_sec_string(raw):
+                b["sections"] = list(all_sec_pref)
+                updated_count += 1
+
+        if updated_count > 0:
+            self._refresh_bookings_table()
+            self.log(f"Re-applied 'All Sec' preferences: Updated {updated_count} booking(s) to [{', '.join(all_sec_pref)}].")
 
     def _close_browser_manually(self):
         self.worker.task_queue.put({"action": "CLOSE_BROWSER"})

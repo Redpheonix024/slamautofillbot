@@ -7,7 +7,7 @@ import json
 from datetime import datetime
 
 # Application Version & GitHub Releases
-APP_VERSION = "1.0.6"
+APP_VERSION = "1.0.7"
 GITHUB_REPO = "Redpheonix024/slamautofillbot"
 GITHUB_RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
@@ -102,6 +102,35 @@ SECTION_IDS = {
     "PPIO": 60,
     "QAI": 45
 }
+
+# All 12 Sections in logical shed sequence
+ALL_SECTIONS_LIST = [
+    "M1", "M2", "E3", "E3A", "E4", "E5A", "E5B", "BRS", "E8", "QAI", "LAB", "PPIO"
+]
+
+# Default rule for 'All Sec': All sections except E8, QAI (Q&I), LAB, PPIO
+DEFAULT_ALL_SEC_EXCLUDED = ["E8", "QAI", "LAB", "PPIO"]
+DEFAULT_ALL_SEC_INCLUDED = [s for s in ALL_SECTIONS_LIST if s not in DEFAULT_ALL_SEC_EXCLUDED]
+
+def get_all_sec_preferences() -> list:
+    """
+    Returns the list of sections assigned when 'All Sec' is detected.
+    Defaults to all sections except E8, QAI (Q&I), LAB, PPIO.
+    """
+    s = load_settings()
+    custom = s.get("all_sec_included")
+    if isinstance(custom, list) and custom:
+        valid = [sec for sec in custom if sec in SECTION_IDS]
+        if valid:
+            return valid
+    return list(DEFAULT_ALL_SEC_INCLUDED)
+
+def save_all_sec_preferences(sections: list):
+    """Saves user-configured sections for 'All Sec' to persistent settings."""
+    s = load_settings()
+    s["all_sec_included"] = [sec for sec in sections if sec in SECTION_IDS]
+    save_settings(s)
+
 
 # Jobcard Form Default Settings
 DEFAULT_JOBCARD_TYPE = "Schedule Attention" # value "2"

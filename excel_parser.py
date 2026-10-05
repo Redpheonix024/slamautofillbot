@@ -22,20 +22,58 @@ def extract_loco_from_text(text: str) -> Optional[str]:
         return m2.group(1)
     return None
 
-def normalize_sections(sec_str: str) -> List[str]:
+import config
+
+def is_all_sec_string(sec_str: str) -> bool:
     """
-    Parse strings like 'E3A & E5A', 'M1 / M2', 'E8 / E4', 'E4/E5B', 'M2 & E3A'
+    Checks if a section string represents 'All Sec' / 'All Sections'.
+    Handles variations like 'All Sec', 'ALL SEC', 'All sec.', 'ALL SECTION', 'AllSec', 'ALL-SEC'.
+    """
+    if not sec_str:
+        return False
+    s = str(sec_str).strip().upper()
+    if s in {"ALL SEC", "ALL SEC.", "ALL SECS", "ALL SECTION", "ALL SECTIONS", "ALL-SEC", "ALLSEC", "ALL"}:
+        return True
+    if re.search(r'\bALL\s*SEC(?:TION)?S?\.?\b', s):
+        return True
+    return False
+
+def normalize_sections(sec_str: str, all_sec_custom: Optional[List[str]] = None) -> List[str]:
+    """
+    Parse strings like 'All Sec', 'E3A & E5A', 'M1 / M2', 'E8 / E4', 'Q&I', 'E4/E5B', 'M2 & E3A'
     into validated SLAM section codes.
+    If 'All Sec' is detected, maps to the configured preference (default: all sections except E8, QAI, LAB, PPIO).
     """
     if not sec_str:
         return []
+
+    # 1. Check if the entire string is 'All Sec'
+    if is_all_sec_string(sec_str):
+        if all_sec_custom:
+            return [s for s in all_sec_custom if s in KNOWN_SECTIONS]
+        return config.get_all_sec_preferences()
+
+    # Pre-normalize Q&I / Q & I / Q/I to QAI before splitting by '&' or '/'
+    processed = re.sub(r'\bQ\s*&\s*I\b', 'QAI', str(sec_str), flags=re.IGNORECASE)
+    processed = re.sub(r'\bQ\s*/\s*I\b', 'QAI', processed, flags=re.IGNORECASE)
     
     # Split by common delimiters: &, /, and, comma, plus
-    tokens = re.split(r'[/&+,]|\band\b', str(sec_str), flags=re.IGNORECASE)
+    tokens = re.split(r'[/&+,]|\band\b', processed, flags=re.IGNORECASE)
     matched = []
     
     for token in tokens:
         cleaned = token.strip().upper()
+        if not cleaned:
+            continue
+
+        # Check if this token is 'All Sec'
+        if is_all_sec_string(cleaned):
+            all_sec_list = all_sec_custom or config.get_all_sec_preferences()
+            for s in all_sec_list:
+                if s not in matched:
+                    matched.append(s)
+            continue
+            
         # Direct match
         if cleaned in KNOWN_SECTIONS:
             if cleaned not in matched:
@@ -51,7 +89,10 @@ def normalize_sections(sec_str: str) -> List[str]:
                     
     # Fallback: if nothing matched but raw text exists
     if not matched:
-        raw_upper = sec_str.strip().upper()
+        raw_upper = processed.strip().upper()
+        if is_all_sec_string(raw_upper):
+            all_sec_list = all_sec_custom or config.get_all_sec_preferences()
+            return list(all_sec_list)
         for ks in sorted(KNOWN_SECTIONS, key=len, reverse=True):
             if ks in raw_upper:
                 if ks not in matched:
