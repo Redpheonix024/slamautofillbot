@@ -1521,6 +1521,15 @@ class SLAMAutoFillerGUI:
         self.parsed_data = None
         self.update_info = None
         self._active_modal: Optional[tk.Toplevel] = None
+        self._inline_editor_frame: Optional[tk.Frame] = None
+        self._inline_chip_bar: Optional[tk.Frame] = None
+        self._inline_entry: Optional[tk.Widget] = None
+        self._inline_item_id: Optional[str] = None
+        self._inline_col: Optional[str] = None
+        self._inline_orig_val: str = ""
+        self._inline_clicking_chip: bool = False
+        self._direct_chip_btns: Dict[str, tk.Button] = {}
+        self._syncing_direct_bar: bool = False
 
         # Load credentials from config / user_settings
         saved_u, saved_p = config.get_credentials()
@@ -1981,24 +1990,24 @@ class SLAMAutoFillerGUI:
         all_sec_btn.pack(side=tk.LEFT)
 
         # 4. Bookings Preview Table
-        table_frame = ttk.LabelFrame(main_container, text=" 📋 Bookings to be Staged into SLAM ", padding=6)
+        table_frame = ttk.LabelFrame(main_container, text=" 📋 Bookings to be Staged into SLAM (Click any Section Cell to Edit Directly) ", padding=6)
         table_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
 
         tbl_container = ttk.Frame(table_frame)
         tbl_container.pack(fill=tk.BOTH, expand=True)
 
         cols = ("sno", "desc", "section", "target_sections", "obs_type")
-        self.tree = ttk.Treeview(tbl_container, columns=cols, show="headings", height=7)
+        self.tree = ttk.Treeview(tbl_container, columns=cols, show="headings", height=6)
         self.tree.heading("sno", text="S.No", anchor=tk.CENTER)
         self.tree.heading("desc", text="Booking / Defect Description", anchor=tk.W)
-        self.tree.heading("section", text="Excel Section", anchor=tk.CENTER)
-        self.tree.heading("target_sections", text="Mapped SLAM Section(s)", anchor=tk.CENTER)
-        self.tree.heading("obs_type", text="Source (Obs Type)", anchor=tk.CENTER)
+        self.tree.heading("section", text="✏️ Excel Section", anchor=tk.CENTER)
+        self.tree.heading("target_sections", text="✏️ Mapped SLAM Section(s)", anchor=tk.CENTER)
+        self.tree.heading("obs_type", text="✏️ Source (Obs Type)", anchor=tk.CENTER)
 
         self.tree.column("sno", width=45, stretch=False, anchor=tk.CENTER)
-        self.tree.column("desc", width=480, stretch=True)
-        self.tree.column("section", width=95, stretch=False, anchor=tk.CENTER)
-        self.tree.column("target_sections", width=150, stretch=False, anchor=tk.CENTER)
+        self.tree.column("desc", width=455, stretch=True)
+        self.tree.column("section", width=110, stretch=False, anchor=tk.CENTER)
+        self.tree.column("target_sections", width=165, stretch=False, anchor=tk.CENTER)
         self.tree.column("obs_type", width=140, stretch=False, anchor=tk.CENTER)
 
         self.tree.tag_configure("even", background="#f7fafc")
@@ -2006,13 +2015,99 @@ class SLAMAutoFillerGUI:
         self.tree.tag_configure("warn", background="#fff5f5", foreground="#c53030")
 
         scroll_y = ttk.Scrollbar(tbl_container, orient=tk.VERTICAL, command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scroll_y.set)
+        def _on_tree_yscroll(*args):
+            self._close_inline_editor(commit=True)
+            scroll_y.set(*args)
+        self.tree.configure(yscrollcommand=_on_tree_yscroll)
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
 
+        # Direct Section Quick-Editor Bar (Always visible for instant 1-click section editing)
+        direct_sec_bar = tk.Frame(table_frame, bg="#f7fafc", relief=tk.SOLID, borderwidth=1, padx=6, pady=4)
+        direct_sec_bar.pack(fill=tk.X, pady=(5, 0))
+
+        tk.Label(
+            direct_sec_bar,
+            text="🎯 Direct Section:",
+            font=("Segoe UI", 8, "bold"),
+            bg="#f7fafc",
+            fg="#1a365d"
+        ).pack(side=tk.LEFT, padx=(0, 4))
+
+        self.direct_row_badge = tk.Label(
+            direct_sec_bar,
+            text="No Row",
+            font=("Segoe UI", 8, "bold"),
+            bg="#e2e8f0",
+            fg="#2d3748",
+            padx=5,
+            pady=1
+        )
+        self.direct_row_badge.pack(side=tk.LEFT, padx=(0, 6))
+
+        self.direct_sec_var = tk.StringVar(value="")
+        self.direct_sec_entry = ttk.Entry(direct_sec_bar, textvariable=self.direct_sec_var, width=15, font=("Segoe UI", 9, "bold"))
+        self.direct_sec_entry.pack(side=tk.LEFT, padx=(0, 4))
+        self.direct_sec_entry.bind("<Return>", self._on_direct_sec_entry_commit)
+        self.direct_sec_entry.bind("<KP_Enter>", self._on_direct_sec_entry_commit)
+
+        apply_sec_btn = tk.Button(
+            direct_sec_bar,
+            text="✓ Set",
+            font=("Segoe UI", 8, "bold"),
+            bg="#2b6cb0",
+            fg="white",
+            activebackground="#2c5282",
+            activeforeground="white",
+            padx=6,
+            pady=1,
+            cursor="hand2",
+            command=self._on_direct_sec_entry_commit
+        )
+        apply_sec_btn.pack(side=tk.LEFT, padx=(0, 8))
+
+        tk.Label(
+            direct_sec_bar,
+            text="Toggle:",
+            font=("Segoe UI", 8, "bold"),
+            bg="#f7fafc",
+            fg="#4a5568"
+        ).pack(side=tk.LEFT, padx=(0, 3))
+
+        self._direct_chip_btns = {}
+        for s in config.ALL_SECTIONS_LIST:
+            b = tk.Button(
+                direct_sec_bar,
+                text=s,
+                font=("Segoe UI", 8, "bold"),
+                bg="#edf2f7",
+                fg="#2d3748",
+                activebackground="#cbd5e0",
+                padx=4,
+                pady=1,
+                cursor="hand2",
+                command=lambda sec=s: self._on_direct_chip_click(sec)
+            )
+            b.pack(side=tk.LEFT, padx=1)
+            self._direct_chip_btns[s] = b
+
+        self._direct_all_sec_btn = tk.Button(
+            direct_sec_bar,
+            text="⭐ All Sec",
+            font=("Segoe UI", 8, "bold"),
+            bg="#feebc8",
+            fg="#7b341e",
+            activebackground="#fbd38d",
+            padx=5,
+            pady=1,
+            cursor="hand2",
+            command=self._on_direct_all_sec_click
+        )
+        self._direct_all_sec_btn.pack(side=tk.LEFT, padx=(4, 2))
+
         # Toolbar below the table
         tbl_toolbar = ttk.Frame(table_frame)
-        tbl_toolbar.pack(fill=tk.X, pady=(6, 0))
+        tbl_toolbar.pack(fill=tk.X, pady=(5, 0))
 
         edit_btn = tk.Button(
             tbl_toolbar,
@@ -2029,6 +2124,20 @@ class SLAMAutoFillerGUI:
         )
         edit_btn.pack(side=tk.LEFT, padx=(0, 6))
 
+        edit_sec_btn = tk.Button(
+            tbl_toolbar,
+            text="🎯 Edit Section Inline",
+            font=("Segoe UI", 8, "bold"),
+            bg="#edf2f7",
+            fg="#2b6cb0",
+            activebackground="#cbd5e0",
+            padx=8,
+            pady=3,
+            cursor="hand2",
+            command=self._edit_selected_section_inline
+        )
+        edit_sec_btn.pack(side=tk.LEFT, padx=(0, 6))
+
         add_btn = ttk.Button(tbl_toolbar, text="➕ Add Booking", command=self._on_add_booking_click)
         add_btn.pack(side=tk.LEFT, padx=(0, 6))
 
@@ -2037,18 +2146,31 @@ class SLAMAutoFillerGUI:
 
         tk.Label(
             tbl_toolbar,
-            text="💡 Tip: Double-click any row to edit its defect message or section.",
+            text="💡 Tip: Click directly on any Section cell in the table to edit inline, or click the Section Toggle buttons above!",
             font=("Segoe UI", 8, "italic"),
             fg="#4a5568"
         ).pack(side=tk.LEFT)
 
         # Bindings
-        self.tree.bind("<Double-1>", lambda e: self._on_edit_booking_click())
+        self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
+        self.tree.bind("<Button-1>", self._on_tree_single_click, add="+")
+        self.tree.bind("<Double-1>", self._on_tree_double_click)
         self.tree.bind("<Return>", lambda e: self._on_edit_booking_click())
 
         # Right-click context menu
         self.tree_menu = tk.Menu(self.root, tearoff=0)
-        self.tree_menu.add_command(label="✏️ Edit Message / Booking", command=self._on_edit_booking_click)
+        self.tree_menu.add_command(label="🎯 Edit Section Inline", command=self._edit_selected_section_inline)
+        self.quick_sec_menu = tk.Menu(self.tree_menu, tearoff=0)
+        self.quick_sec_menu.add_command(label="⭐ All Sec", command=lambda: self._quick_set_selected_section("All Sec"))
+        self.quick_sec_menu.add_separator()
+        for s in config.ALL_SECTIONS_LIST:
+            self.quick_sec_menu.add_command(label=f"Set only {s}", command=lambda sec=s: self._quick_set_selected_section(sec))
+        self.quick_sec_menu.add_separator()
+        for s in config.ALL_SECTIONS_LIST:
+            self.quick_sec_menu.add_command(label=f"Toggle +/{s}", command=lambda sec=s: self._on_direct_chip_click(sec))
+        self.tree_menu.add_cascade(label="🎯 Quick Set / Toggle Section", menu=self.quick_sec_menu)
+        self.tree_menu.add_separator()
+        self.tree_menu.add_command(label="✏️ Edit Full Message / Booking...", command=self._on_edit_booking_click)
         self.tree_menu.add_command(label="➕ Add New Booking", command=self._on_add_booking_click)
         self.tree_menu.add_command(label="🗑️ Delete Selected Booking", command=self._on_delete_booking_click)
         self.tree.bind("<Button-3>", self._show_tree_context_menu)
@@ -2340,8 +2462,11 @@ class SLAMAutoFillerGUI:
 
     def _refresh_bookings_table(self):
         """Refreshes the Treeview table, total count, and section breakdown from self.parsed_data."""
+        self._close_inline_editor(commit=False)
         if not self.parsed_data:
             return
+
+        prev_sel = self.tree.selection()
 
         for item in self.tree.get_children():
             self.tree.delete(item)
@@ -2350,10 +2475,8 @@ class SLAMAutoFillerGUI:
         self.count_var.set(str(len(bookings)))
         self.parsed_data["bookings_count"] = len(bookings)
 
-        sec_counts = collections.Counter()
         for idx, b in enumerate(bookings):
             secs = b.get("sections", [])
-            sec_counts.update(secs)
             sec_display = ", ".join(secs) if secs else "⚠️ Unrecognized"
             tag = "warn" if not secs else ("even" if idx % 2 == 0 else "odd")
             obs_type_val = b.get("obs_type", self.obs_type_var.get())
@@ -2365,11 +2488,593 @@ class SLAMAutoFillerGUI:
                 tags=(tag,)
             )
 
+        self._update_section_breakdown_summary()
+
+        # Restore previous selection or select first row so Direct Section bar is ready
+        restored = [iid for iid in prev_sel if self.tree.exists(iid)]
+        if restored:
+            self.tree.selection_set(restored)
+        elif bookings and self.tree.exists("row_0"):
+            self.tree.selection_set("row_0")
+
+        self._sync_direct_section_bar()
+
+    def _update_section_breakdown_summary(self):
+        """Updates the top section breakdown summary label from self.parsed_data."""
+        if not self.parsed_data:
+            self.sec_breakdown_var.set("Sections: --")
+            return
+        sec_counts = collections.Counter()
+        for b in self.parsed_data.get("bookings", []):
+            sec_counts.update(b.get("sections", []))
         if sec_counts:
             sec_summary = "  |  ".join(f"{s}: {c}" for s, c in sec_counts.most_common())
             self.sec_breakdown_var.set(f"Sections: {sec_summary}")
         else:
             self.sec_breakdown_var.set("Sections: None detected")
+
+    def _get_selected_row_indices(self) -> List[int]:
+        """Returns sorted list of booking indices currently selected in the Treeview."""
+        indices = []
+        for item_id in self.tree.selection():
+            try:
+                idx = int(item_id.replace("row_", ""))
+                indices.append(idx)
+            except ValueError:
+                try:
+                    indices.append(self.tree.index(item_id))
+                except Exception:
+                    pass
+        return sorted(set(indices))
+
+    def _on_tree_select(self, event=None):
+        """Called whenever Treeview selection changes; syncs the Direct Section Quick-Editor Bar."""
+        self._sync_direct_section_bar()
+
+    def _sync_direct_section_bar(self, idx: Optional[int] = None):
+        """Updates the Direct Section Quick-Editor Bar to reflect the currently selected booking row."""
+        if self._syncing_direct_bar:
+            return
+        self._syncing_direct_bar = True
+        try:
+            if not self.parsed_data or not self.parsed_data.get("bookings"):
+                self.direct_row_badge.config(text="No Row", bg="#e2e8f0", fg="#2d3748")
+                self.direct_sec_var.set("")
+                for s, btn in self._direct_chip_btns.items():
+                    btn.config(bg="#edf2f7", fg="#2d3748")
+                self._direct_all_sec_btn.config(bg="#feebc8", fg="#7b341e")
+                return
+
+            if idx is None:
+                sel_indices = self._get_selected_row_indices()
+                if not sel_indices:
+                    self.direct_row_badge.config(text="Select Row", bg="#e2e8f0", fg="#2d3748")
+                    self.direct_sec_var.set("")
+                    for s, btn in self._direct_chip_btns.items():
+                        btn.config(bg="#edf2f7", fg="#2d3748")
+                    self._direct_all_sec_btn.config(bg="#feebc8", fg="#7b341e")
+                    return
+                idx = sel_indices[0]
+            else:
+                sel_indices = [idx]
+
+            bookings = self.parsed_data.get("bookings", [])
+            if idx < 0 or idx >= len(bookings):
+                return
+
+            booking = bookings[idx]
+            sno = booking.get("sno", idx + 1)
+            if len(sel_indices) > 1:
+                self.direct_row_badge.config(text=f"{len(sel_indices)} Rows", bg="#bee3f8", fg="#1a365d")
+            else:
+                self.direct_row_badge.config(text=f"S.No {sno}", bg="#bee3f8", fg="#1a365d")
+
+            raw_sec = booking.get("raw_section", "")
+            active_secs = set(booking.get("sections", []))
+            self.direct_sec_var.set(raw_sec)
+
+            for s, btn in self._direct_chip_btns.items():
+                if s in active_secs:
+                    btn.config(bg="#2f855a", fg="white", activebackground="#276749", activeforeground="white")
+                else:
+                    btn.config(bg="#edf2f7", fg="#2d3748", activebackground="#cbd5e0", activeforeground="#1a202c")
+
+            from excel_parser import is_all_sec_string
+            if is_all_sec_string(raw_sec):
+                self._direct_all_sec_btn.config(bg="#dd6b20", fg="white", activebackground="#c05621", activeforeground="white")
+            else:
+                self._direct_all_sec_btn.config(bg="#feebc8", fg="#7b341e", activebackground="#fbd38d", activeforeground="#7b341e")
+        finally:
+            self._syncing_direct_bar = False
+
+    def _update_booking_section(self, idx: int, new_raw_sec: str, log_change: bool = True):
+        """Updates a booking's raw_section and mapped sections in-place and refreshes the table row."""
+        if not self.parsed_data or idx < 0 or idx >= len(self.parsed_data.get("bookings", [])):
+            return
+        from excel_parser import normalize_sections
+        booking = self.parsed_data["bookings"][idx]
+        raw_clean = new_raw_sec.strip()
+        mapped_secs = normalize_sections(raw_clean)
+        booking["raw_section"] = raw_clean
+        booking["sections"] = mapped_secs
+
+        item_id = f"row_{idx}"
+        if self.tree.exists(item_id):
+            sec_display = ", ".join(mapped_secs) if mapped_secs else "⚠️ Unrecognized"
+            tag = "warn" if not mapped_secs else ("even" if idx % 2 == 0 else "odd")
+            obs_type_val = booking.get("obs_type", self.obs_type_var.get())
+            self.tree.item(
+                item_id,
+                values=(booking.get("sno", idx + 1), booking.get("description", ""), raw_clean, sec_display, obs_type_val),
+                tags=(tag,)
+            )
+
+        self._update_section_breakdown_summary()
+        self._sync_direct_section_bar(idx)
+
+        if log_change:
+            sec_log = ", ".join(mapped_secs) if mapped_secs else "⚠️ Unrecognized"
+            self.log(f"Updated S.No {booking.get('sno', idx + 1)} section -> '{raw_clean}' (Mapped: {sec_log})")
+
+    def _on_direct_sec_entry_commit(self, event=None):
+        """Commits the text typed into the Direct Section Quick-Editor Bar to the selected row(s)."""
+        if not self.parsed_data or not self.parsed_data.get("bookings"):
+            return
+        sel_indices = self._get_selected_row_indices()
+        if not sel_indices:
+            sel_indices = [0]
+            if self.tree.exists("row_0"):
+                self.tree.selection_set("row_0")
+
+        new_raw = self.direct_sec_var.get().strip()
+        for idx in sel_indices:
+            self._update_booking_section(idx, new_raw, log_change=True)
+
+    def _on_direct_chip_click(self, sec_code: str):
+        """Toggles a SLAM section chip directly on the selected booking row(s)."""
+        if not self.parsed_data or not self.parsed_data.get("bookings"):
+            messagebox.showinfo("No Bookings", "Please load an Excel file first.")
+            return
+        sel_indices = self._get_selected_row_indices()
+        if not sel_indices:
+            sel_indices = [0]
+            if self.tree.exists("row_0"):
+                self.tree.selection_set("row_0")
+
+        from excel_parser import normalize_sections
+        for idx in sel_indices:
+            booking = self.parsed_data["bookings"][idx]
+            existing = list(booking.get("sections") or normalize_sections(booking.get("raw_section", "")))
+            if sec_code in existing:
+                existing.remove(sec_code)
+            else:
+                existing.append(sec_code)
+            ordered = [s for s in config.ALL_SECTIONS_LIST if s in existing]
+            for s in existing:
+                if s not in ordered:
+                    ordered.append(s)
+            new_raw = " / ".join(ordered) if ordered else ""
+            self._update_booking_section(idx, new_raw, log_change=True)
+            if self._inline_item_id == f"row_{idx}" and hasattr(self, "_inline_sec_var"):
+                self._inline_sec_var.set(new_raw)
+
+    def _on_direct_all_sec_click(self):
+        """Toggles 'All Sec' directly on the selected booking row(s)."""
+        if not self.parsed_data or not self.parsed_data.get("bookings"):
+            messagebox.showinfo("No Bookings", "Please load an Excel file first.")
+            return
+        sel_indices = self._get_selected_row_indices()
+        if not sel_indices:
+            sel_indices = [0]
+            if self.tree.exists("row_0"):
+                self.tree.selection_set("row_0")
+
+        from excel_parser import is_all_sec_string
+        for idx in sel_indices:
+            booking = self.parsed_data["bookings"][idx]
+            if is_all_sec_string(booking.get("raw_section", "")):
+                new_raw = ""
+            else:
+                new_raw = "All Sec"
+            self._update_booking_section(idx, new_raw, log_change=True)
+            if self._inline_item_id == f"row_{idx}" and hasattr(self, "_inline_sec_var"):
+                self._inline_sec_var.set(new_raw)
+
+    def _quick_set_selected_section(self, raw_sec: str):
+        """Sets the exact section string on all selected rows via context menu."""
+        if not self.parsed_data or not self.parsed_data.get("bookings"):
+            return
+        for idx in self._get_selected_row_indices():
+            self._update_booking_section(idx, raw_sec, log_change=True)
+
+    def _edit_selected_section_inline(self):
+        """Opens the inline cell editor on the Excel Section column of the selected row."""
+        if not self.parsed_data or not self.parsed_data.get("bookings"):
+            messagebox.showinfo("No Bookings", "Please load an Excel file first.")
+            return
+        sel = self.tree.selection()
+        item_id = sel[0] if sel else "row_0"
+        if self.tree.exists(item_id):
+            self.tree.selection_set(item_id)
+            self.tree.see(item_id)
+            self.root.update_idletasks()
+            self._open_inline_section_editor(item_id, "#3")
+
+    def _on_tree_single_click(self, event):
+        """Opens direct inline editor when clicking on Section (#3, #4) or Source (#5) columns."""
+        region = self.tree.identify_region(event.x, event.y)
+        if region != "cell":
+            self._close_inline_editor(commit=True)
+            return
+
+        item_id = self.tree.identify_row(event.y)
+        col = self.tree.identify_column(event.x)
+        if not item_id:
+            self._close_inline_editor(commit=True)
+            return
+
+        if col in ("#3", "#4"):
+            if self._inline_item_id == item_id and self._inline_col == col and self._inline_editor_frame:
+                return
+            self._close_inline_editor(commit=True)
+            self.tree.selection_set(item_id)
+            self.tree.focus(item_id)
+            self.root.after(15, lambda i=item_id, c=col: self._open_inline_section_editor(i, c))
+        elif col == "#5":
+            if self._inline_item_id == item_id and self._inline_col == col and self._inline_editor_frame:
+                return
+            self._close_inline_editor(commit=True)
+            self.tree.selection_set(item_id)
+            self.tree.focus(item_id)
+            self.root.after(15, lambda i=item_id, c=col: self._open_inline_obs_editor(i, c))
+        else:
+            self._close_inline_editor(commit=True)
+
+    def _on_tree_double_click(self, event):
+        """Handles double-click: inline section/obs edit on #3/#4/#5, or full EditBookingDialog on #1/#2."""
+        region = self.tree.identify_region(event.x, event.y)
+        if region != "cell":
+            return
+        item_id = self.tree.identify_row(event.y)
+        col = self.tree.identify_column(event.x)
+        if not item_id:
+            return
+        if col in ("#3", "#4"):
+            self._open_inline_section_editor(item_id, col)
+        elif col == "#5":
+            self._open_inline_obs_editor(item_id, col)
+        else:
+            self._close_inline_editor(commit=True)
+            self._on_edit_booking_click()
+
+    def _open_inline_section_editor(self, item_id: str, col: str = "#3"):
+        """Places a direct inline Entry and floating Section Chip Picker over a Treeview Section cell."""
+        if not self.parsed_data or not self.tree.exists(item_id):
+            return
+        if self._inline_editor_frame and self._inline_item_id == item_id and self._inline_col == col:
+            if self._inline_entry:
+                try:
+                    self._inline_entry.focus_set()
+                except Exception:
+                    pass
+            return
+
+        self._close_inline_editor(commit=True)
+
+        try:
+            idx = int(item_id.replace("row_", ""))
+        except ValueError:
+            idx = self.tree.index(item_id)
+
+        bookings = self.parsed_data.get("bookings", [])
+        if idx < 0 or idx >= len(bookings):
+            return
+
+        bbox = self.tree.bbox(item_id, col)
+        if not bbox:
+            self.tree.see(item_id)
+            self.root.update_idletasks()
+            bbox = self.tree.bbox(item_id, col)
+        if not bbox:
+            return
+
+        x, y, width, height = bbox
+        booking = bookings[idx]
+        raw_val = booking.get("raw_section", "")
+
+        self._inline_item_id = item_id
+        self._inline_col = col
+        self._inline_orig_val = raw_val
+        self._inline_clicking_chip = False
+
+        # 1. Cell Overlay Entry
+        editor_frame = tk.Frame(self.tree, bg="#2b6cb0", bd=0)
+        editor_frame.place(x=x, y=y, width=max(width, 105), height=height)
+        self._inline_editor_frame = editor_frame
+
+        self._inline_sec_var = tk.StringVar(value=raw_val)
+        entry = tk.Entry(
+            editor_frame,
+            textvariable=self._inline_sec_var,
+            font=("Segoe UI", 9, "bold"),
+            justify=tk.CENTER,
+            bg="#fffff0",
+            fg="#1a365d",
+            relief=tk.FLAT,
+            insertbackground="#1a365d"
+        )
+        entry.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
+        entry.select_range(0, tk.END)
+        entry.focus_set()
+        self._inline_entry = entry
+
+        # 2. Floating Section Quick-Toggle Chip Bar attached to the cell
+        chip_bar = tk.Frame(self.tree, bg="#ebf8ff", highlightbackground="#2b6cb0", highlightthickness=1, padx=4, pady=3)
+        self._inline_chip_bar = chip_bar
+
+        def _mark_chip_click(event=None):
+            self._inline_clicking_chip = True
+
+        chip_bar.bind("<ButtonPress-1>", _mark_chip_click)
+
+        inline_chip_btns: Dict[str, tk.Button] = {}
+
+        def _refresh_inline_chips(*args):
+            from excel_parser import normalize_sections, is_all_sec_string
+            curr_text = self._inline_sec_var.get().strip()
+            active = set(normalize_sections(curr_text))
+            for s_code, b_widget in inline_chip_btns.items():
+                if s_code in active:
+                    b_widget.config(bg="#2f855a", fg="white", activebackground="#276749", activeforeground="white")
+                else:
+                    b_widget.config(bg="#ffffff", fg="#2d3748", activebackground="#cbd5e0", activeforeground="#1a202c")
+            if is_all_sec_string(curr_text):
+                all_btn.config(bg="#dd6b20", fg="white")
+            else:
+                all_btn.config(bg="#feebc8", fg="#7b341e")
+            # Live preview in table
+            self._update_booking_section(idx, curr_text, log_change=False)
+
+        def _toggle_inline_chip(sec_code: str):
+            self._inline_clicking_chip = True
+            from excel_parser import normalize_sections
+            curr_text = self._inline_sec_var.get().strip()
+            existing = list(normalize_sections(curr_text))
+            if sec_code in existing:
+                existing.remove(sec_code)
+            else:
+                existing.append(sec_code)
+            ordered = [s for s in config.ALL_SECTIONS_LIST if s in existing]
+            for s in existing:
+                if s not in ordered:
+                    ordered.append(s)
+            new_text = " / ".join(ordered) if ordered else ""
+            self._inline_sec_var.set(new_text)
+            if self._inline_entry and self._inline_entry.winfo_exists():
+                self._inline_entry.focus_set()
+                self._inline_entry.icursor(tk.END)
+            self.root.after(60, lambda: setattr(self, "_inline_clicking_chip", False))
+
+        def _toggle_inline_all_sec():
+            self._inline_clicking_chip = True
+            from excel_parser import is_all_sec_string
+            if is_all_sec_string(self._inline_sec_var.get()):
+                self._inline_sec_var.set("")
+            else:
+                self._inline_sec_var.set("All Sec")
+            if self._inline_entry and self._inline_entry.winfo_exists():
+                self._inline_entry.focus_set()
+                self._inline_entry.icursor(tk.END)
+            self.root.after(60, lambda: setattr(self, "_inline_clicking_chip", False))
+
+        for s in config.ALL_SECTIONS_LIST:
+            b = tk.Button(
+                chip_bar,
+                text=s,
+                font=("Segoe UI", 8, "bold"),
+                bg="#ffffff",
+                fg="#2d3748",
+                padx=4,
+                pady=1,
+                relief=tk.RAISED,
+                bd=1,
+                cursor="hand2",
+                takefocus=0,
+                command=lambda sec=s: _toggle_inline_chip(sec)
+            )
+            b.bind("<ButtonPress-1>", _mark_chip_click)
+            b.pack(side=tk.LEFT, padx=1)
+            inline_chip_btns[s] = b
+
+        all_btn = tk.Button(
+            chip_bar,
+            text="⭐ All Sec",
+            font=("Segoe UI", 8, "bold"),
+            bg="#feebc8",
+            fg="#7b341e",
+            padx=5,
+            pady=1,
+            relief=tk.RAISED,
+            bd=1,
+            cursor="hand2",
+            takefocus=0,
+            command=_toggle_inline_all_sec
+        )
+        all_btn.bind("<ButtonPress-1>", _mark_chip_click)
+        all_btn.pack(side=tk.LEFT, padx=(4, 2))
+
+        ok_btn = tk.Button(
+            chip_bar,
+            text="✓ OK",
+            font=("Segoe UI", 8, "bold"),
+            bg="#2b6cb0",
+            fg="white",
+            activebackground="#2c5282",
+            activeforeground="white",
+            padx=6,
+            pady=1,
+            relief=tk.FLAT,
+            cursor="hand2",
+            takefocus=0,
+            command=lambda: self._close_inline_editor(commit=True)
+        )
+        ok_btn.bind("<ButtonPress-1>", _mark_chip_click)
+        ok_btn.pack(side=tk.LEFT, padx=(4, 1))
+
+        chip_bar.update_idletasks()
+        req_w = chip_bar.winfo_reqwidth()
+        req_h = chip_bar.winfo_reqheight()
+        tw = self.tree.winfo_width()
+        th = self.tree.winfo_height()
+        bar_x = max(4, min(x - 100, tw - req_w - 4))
+        bar_y = (y + height + 1) if (y + height + req_h + 2 <= th) else max(2, y - req_h - 1)
+        chip_bar.place(x=bar_x, y=bar_y)
+
+        _refresh_inline_chips()
+        self._inline_sec_var.trace_add("write", _refresh_inline_chips)
+
+        # Keyboard navigation & commit bindings
+        entry.bind("<Return>", lambda e: self._close_inline_editor(commit=True))
+        entry.bind("<KP_Enter>", lambda e: self._close_inline_editor(commit=True))
+        entry.bind("<Escape>", lambda e: self._close_inline_editor(commit=False))
+        entry.bind("<Down>", lambda e, r=idx, c=col: self._inline_move_row(r + 1, c))
+        entry.bind("<Up>", lambda e, r=idx, c=col: self._inline_move_row(r - 1, c))
+        entry.bind("<Tab>", lambda e, r=idx, c=col: self._inline_move_row(r + 1, c))
+        entry.bind("<FocusOut>", self._on_inline_focus_out)
+
+    def _open_inline_obs_editor(self, item_id: str, col: str = "#5"):
+        """Places a direct inline Combobox over the Source (Obs Type) cell (#5)."""
+        if not self.parsed_data or not self.tree.exists(item_id):
+            return
+        self._close_inline_editor(commit=True)
+
+        try:
+            idx = int(item_id.replace("row_", ""))
+        except ValueError:
+            idx = self.tree.index(item_id)
+
+        bookings = self.parsed_data.get("bookings", [])
+        if idx < 0 or idx >= len(bookings):
+            return
+
+        bbox = self.tree.bbox(item_id, col)
+        if not bbox:
+            return
+        x, y, width, height = bbox
+        booking = bookings[idx]
+        curr_obs = booking.get("obs_type", self.obs_type_var.get())
+
+        self._inline_item_id = item_id
+        self._inline_col = col
+        self._inline_orig_val = curr_obs
+
+        editor_frame = tk.Frame(self.tree, bg="#2b6cb0", bd=0)
+        editor_frame.place(x=x, y=y, width=max(width, 130), height=height)
+        self._inline_editor_frame = editor_frame
+
+        obs_var = tk.StringVar(value=curr_obs)
+        cb = ttk.Combobox(
+            editor_frame,
+            textvariable=obs_var,
+            values=list(config.OBS_TYPE_VALUES.keys()),
+            state="readonly",
+            font=("Segoe UI", 8, "bold")
+        )
+        cb.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
+        cb.focus_set()
+        self._inline_entry = cb
+
+        def _on_obs_selected(event=None):
+            new_obs = obs_var.get()
+            booking["obs_type"] = new_obs
+            vals = list(self.tree.item(item_id, "values"))
+            if len(vals) >= 5:
+                vals[4] = new_obs
+                self.tree.item(item_id, values=vals)
+            self.log(f"Updated S.No {booking.get('sno', idx + 1)} Source -> '{new_obs}'")
+            self._close_inline_editor(commit=True)
+
+        cb.bind("<<ComboboxSelected>>", _on_obs_selected)
+        cb.bind("<Escape>", lambda e: self._close_inline_editor(commit=False))
+        cb.bind("<FocusOut>", self._on_inline_focus_out)
+
+    def _inline_move_row(self, next_idx: int, col: str):
+        """Commits current inline edit and moves inline editor to next/previous row."""
+        self._close_inline_editor(commit=True)
+        if not self.parsed_data:
+            return "break"
+        bookings = self.parsed_data.get("bookings", [])
+        if 0 <= next_idx < len(bookings):
+            next_id = f"row_{next_idx}"
+            if self.tree.exists(next_id):
+                self.tree.selection_set(next_id)
+                self.tree.focus(next_id)
+                self.tree.see(next_id)
+                self.root.after(20, lambda: self._open_inline_section_editor(next_id, col))
+        return "break"
+
+    def _on_inline_focus_out(self, event=None):
+        """Delayed focus check so clicking inline section chips does not prematurely close the editor."""
+        self.root.after(100, self._check_inline_focus)
+
+    def _check_inline_focus(self):
+        if self._inline_clicking_chip:
+            return
+        if not self._inline_editor_frame:
+            return
+        try:
+            focused = self.root.focus_get()
+            if focused is not None:
+                w = focused
+                while w is not None:
+                    if w == self._inline_editor_frame or w == self._inline_chip_bar:
+                        return
+                    w = getattr(w, "master", None)
+        except Exception:
+            pass
+        self._close_inline_editor(commit=True)
+
+    def _close_inline_editor(self, commit: bool = True):
+        """Commits or reverts active inline cell edit and destroys overlay widgets."""
+        if not self._inline_editor_frame and not self._inline_chip_bar:
+            return
+
+        item_id = self._inline_item_id
+        col = self._inline_col
+        orig_val = self._inline_orig_val
+
+        self._inline_item_id = None
+        self._inline_col = None
+
+        if item_id and col in ("#3", "#4") and self.parsed_data:
+            try:
+                idx = int(item_id.replace("row_", ""))
+                if 0 <= idx < len(self.parsed_data.get("bookings", [])):
+                    if commit and hasattr(self, "_inline_sec_var"):
+                        new_val = self._inline_sec_var.get().strip()
+                        changed = (new_val != orig_val.strip())
+                        self._update_booking_section(idx, new_val, log_change=changed)
+                    elif not commit:
+                        self._update_booking_section(idx, orig_val, log_change=False)
+            except Exception:
+                pass
+
+        if self._inline_editor_frame:
+            try:
+                self._inline_editor_frame.destroy()
+            except Exception:
+                pass
+            self._inline_editor_frame = None
+
+        if self._inline_chip_bar:
+            try:
+                self._inline_chip_bar.destroy()
+            except Exception:
+                pass
+            self._inline_chip_bar = None
+
+        self._inline_entry = None
+        self._inline_clicking_chip = False
 
     def _apply_obs_type_to_all(self):
         """Sets the selected Source (Obs Type) onto all bookings currently loaded."""
