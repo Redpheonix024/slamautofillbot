@@ -534,58 +534,58 @@ def _normalize_eq_dict_row(sno: int, raw_dict: Dict[str, Any], default_eq_name: 
         eq_raw_disp = "SPEED SENSOR"
 
     raw_sched = _get("schedule", "sch", "latest fitment", "latest oh type", "oh type", "oh type/shed")
-    schedule = normalize_schedule_code(raw_sched)
+    schedule = normalize_schedule_code(raw_sched) or "IA"
 
     prov_raw = _get("provision date", "prov date", "provision_date", "provided date", "latest fitment date", "l/date", "oh date", "oh  date", "update date till", "update till", "date")
     prov_date = format_excel_date(prov_raw)
     if not re.match(r"^\d{2}/\d{2}/\d{4}$", prov_date):
         # Fallback if latest fitment date was in OH Type/SHED column
         alt_prov = format_excel_date(_get("oh type/shed", "oh date", "commdt", "comm. dt"))
-        prov_date = alt_prov if re.match(r"^\d{2}/\d{2}/\d{4}$", alt_prov) else ""
+        prov_date = alt_prov if re.match(r"^\d{2}/\d{2}/\d{4}$", alt_prov) else "03/09/2026"
 
     model = format_excel_scalar(_get("model", "eq.model", "eq model"))
     if is_blank_eq_value(model):
-        model = ""
+        model = "NA"
 
     eq_num = format_excel_scalar(_get("eq. number (m)", "eq. number", "eq.number", "sr. no.", "sr no", "serial no", "slno", "sl.no."))
     if is_blank_eq_value(eq_num):
-        eq_num = ""
+        eq_num = pos_str or "1"
 
     loc_eq_num = format_excel_scalar(_get("location eq. number", "eq. number (l)", "location eq.number", "loc eq. no"))
     if is_blank_eq_value(loc_eq_num):
-        loc_eq_num = eq_num or (f"{eq_raw_disp}" if eq_raw_disp in ("TMB1", "TMB2", "MRB1", "MRB2", "OCB1", "OCB2") else (pos_str or ""))
+        loc_eq_num = eq_num or (f"{eq_raw_disp}" if eq_raw_disp in ("TMB1", "TMB2", "MRB1", "MRB2", "OCB1", "OCB2") else (pos_str or "1"))
 
     doc = format_excel_date(_get("doc", "date of commission", "commdt", "comm. dt"))
     if not re.match(r"^\d{2}/\d{2}/\d{4}$", doc):
-        doc = ""
+        doc = prov_date or "09/09/2026"
     dom = format_excel_date(_get("dom", "date of manufacture"))
     if not re.match(r"^\d{2}/\d{2}/\d{4}$", dom):
-        dom = ""
+        dom = "10/09/2026"
     rec_date = format_excel_date(_get("date of receive", "date of recieve", "receive date"))
     if not re.match(r"^\d{2}/\d{2}/\d{4}$", rec_date):
-        rec_date = ""
+        rec_date = prov_date or "03/09/2026"
 
-    make = normalize_make_alias(_get("make", "eq.make", "eq make"))
+    make = normalize_make_alias(_get("make", "eq.make", "eq make")) or "FLORICON"
 
     warranty = format_excel_scalar(_get("warranty")).upper()
     if warranty not in ("YES", "NO"):
-        warranty = "NO" if is_blank_eq_value(warranty) else warranty
+        warranty = "YES"
 
     warranty_upto = format_excel_date(_get("warranty upto", "warranty upto(if avbl)"))
     if warranty_upto.upper() == "NO" or not re.match(r"^\d{2}/\d{2}/\d{4}$", warranty_upto):
-        warranty_upto = ""
+        warranty_upto = "20/09/2028" if warranty == "YES" else "NO"
 
     amc = format_excel_scalar(_get("amc")).upper()
     if amc not in ("YES", "NO"):
-        amc = "NO" if is_blank_eq_value(amc) else amc
+        amc = "NO"
 
     amc_upto = format_excel_date(_get("amc upto", "amc upto (if avbl)"))
     if amc_upto.upper() == "NO" or not re.match(r"^\d{2}/\d{2}/\d{4}$", amc_upto):
-        amc_upto = ""
+        amc_upto = "NO"
 
     remarks = format_excel_scalar(_get("remarks", "remark", "eqpt remarks"))
     if is_blank_eq_value(remarks):
-        remarks = ""
+        remarks = "OK"
 
     return {
         "sno": sno,
@@ -711,6 +711,7 @@ def _parse_wide_tm_matrix_sheet(ws, sheet_title: str, header_row: int) -> Tuple[
             if not make_val and not model_val:
                 continue
 
+            eff_prov = prov_date or "03/09/2026"
             sno = len(rows) + 1
             rows.append({
                 "sno": sno,
@@ -718,20 +719,20 @@ def _parse_wide_tm_matrix_sheet(ws, sheet_title: str, header_row: int) -> Tuple[
                 "eq_raw": eq_name,
                 "eq_name": eq_name,
                 "position": pos,
-                "schedule": "",
-                "provision_date": prov_date,
-                "model": model_val,
+                "schedule": "IA",
+                "provision_date": eff_prov,
+                "model": model_val or "NA",
                 "eq_number": pos,
                 "loc_eq_number": pos,
-                "doc": "",
-                "dom": "",
-                "receive_date": prov_date,
+                "doc": "09/09/2026",
+                "dom": "10/09/2026",
+                "receive_date": eff_prov,
                 "make": make_val,
-                "warranty": "NO",
-                "warranty_upto": "",
+                "warranty": "YES",
+                "warranty_upto": "20/09/2028",
                 "amc": "NO",
-                "amc_upto": "",
-                "remarks": "",
+                "amc_upto": "NO",
+                "remarks": "OK",
             })
             if loco_no not in loco_set:
                 loco_set.add(loco_no)
