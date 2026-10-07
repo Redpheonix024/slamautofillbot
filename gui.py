@@ -4184,8 +4184,9 @@ class SLAMAutoFillerGUI:
     def _auto_detect_equipment_file(self):
         base_dir = get_base_dir()
         candidates = [
-            os.path.join(base_dir, "equipment fill templete.xlsx"),
+            os.path.join(base_dir, "TM_Speed_Sensor_Sample.xlsx"),
             os.path.join(base_dir, "TM in & out details.xlsx"),
+            os.path.join(base_dir, "equipment fill templete.xlsx"),
         ]
         for c in candidates:
             if os.path.exists(c):

@@ -336,11 +336,11 @@ from typing import Tuple
 
 
 def is_blank_eq_value(value: Any) -> bool:
-    """Returns True if value is None, empty, NA, N/A, -, or NONE."""
+    """Returns True if value is None, empty, NA, N/A, NIL, -, or NONE."""
     if value is None:
         return True
     v = str(value).strip().upper()
-    return v in ("", "NA", "N/A", "-", "NONE", "NAN", "NULL", "#VALUE!", "#REF!", "#N/A", "#ERROR!", "#NAME?")
+    return v in ("", "NA", "N/A", "NIL", "UNKNOWN", "--SELECT--", "-", "NONE", "NAN", "NULL", "#VALUE!", "#REF!", "#N/A", "#ERROR!", "#NAME?")
 
 
 def format_excel_scalar(value: Any) -> str:
