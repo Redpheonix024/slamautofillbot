@@ -741,6 +741,645 @@ class SLAMBot:
             "failed_items": failed_items
         }
 
+    # ==========================================================================
+    # SHOP FLOOR & LOCO EQUIPMENT AUTOMATION (Playwright)
+    # ==========================================================================
+
+    def open_shopfloor_module(self, module_name: str, otp: str = "") -> str:
+        """
+        Logs into SLAM (if not already logged in) and opens the requested Shop Floor module
+        in the active browser window.
+        """
+        if not self.is_logged_in:
+            if not self.login(otp=otp):
+                raise RuntimeError("Failed to authenticate to SLAM portal.")
+
+        direct_urls = {
+            "Add Loco Eq./Eq. Fitment": f"{config.BASE_URL}/EquipmentRegister/LocoEquipmentAdd.aspx",
+            "Update Loco Equipment": f"{config.BASE_URL}/EquipmentRegister/LocoEquipmentEdit.aspx",
+            "Add Equipment History": f"{config.BASE_URL}/EquipmentRegister/EquipmentHistoryAddEdit.aspx",
+            "Equipment Change Register": f"{config.BASE_URL}/EquipmentRegister/EquipmentChangeRegister.aspx",
+            "Equipment History": f"{config.BASE_URL}/EquipmentRegister/ViewEquipmentHistory.aspx",
+            "Equipment Register": f"{config.BASE_URL}/Inventory/EquipmentRegisterView.aspx",
+            "Loco Inventory": f"{config.BASE_URL}/Inventory/LocoInventoryView.aspx",
+            "Section Loco Inventory": f"{config.BASE_URL}/EquipmentRegister/SectionLocoInventoryView.aspx",
+            "Repair Sheet History": f"{config.BASE_URL}/Inventory/RepairSheetsHistory.aspx",
+            "Section Equipment Position": f"{config.BASE_URL}/General/SectionEquipmentPosition.aspx?showButtons=true",
+        }
+
+        menu_id = config.SHOPFLOOR_MODULES.get(module_name)
+        if module_name in direct_urls:
+            target_url = direct_urls[module_name]
+            self.log(f"Opening Shop Floor -> {module_name} ({target_url})...")
+            self.safe_goto(target_url)
+            return self.page.url
+
+        # Navigate to Home.aspx first so RedirectPage() and top menu items are guaranteed present
+        self.safe_goto(f"{config.BASE_URL}/General/Home.aspx")
+        time.sleep(0.8)
+
+        if menu_id:
+            self.log(f"Opening Shop Floor -> {module_name} via RedirectPage('{menu_id}')...")
+            try:
+                self.page.evaluate(f"if (typeof RedirectPage !== 'undefined') {{ RedirectPage('{menu_id}'); }}")
+                self.page.wait_for_load_state("domcontentloaded", timeout=15000)
+                time.sleep(1.2)
+            except Exception as e:
+                self.log(f"Warning navigating via RedirectPage('{menu_id}'): {e}")
+        else:
+            self.safe_goto(config.EQUIPMENT_ADD_URL)
+
+        self.log(f"Shop Floor module '{module_name}' opened: {self.page.url}")
+        return self.page.url
+
+    def _find_frame_containing_text(self, page: Page, text: str, max_wait: float = 10.0):
+        """
+        Finds and returns the Frame (or main_frame) inside `page` that contains `text`.
+        Mirrors switch_to_frame_containing() from slam_equipment_automation.py.
+        """
+        end_time = time.time() + max_wait
+        xpath_expr = f"xpath=//*[contains(normalize-space(text()), '{text}')]"
+        while time.time() < end_time:
+            try:
+                if page.main_frame.locator(xpath_expr).count() > 0:
+                    return page.main_frame
+            except Exception:
+                pass
+            for frame in page.frames:
+                if frame == page.main_frame:
+                    continue
+                try:
+                    if frame.locator(xpath_expr).count() > 0:
+                        return frame
+                except Exception:
+                    continue
+            time.sleep(0.4)
+        return None
+
+    def _find_eq_input_by_label(self, frame, label_text: str, timeout_ms: int = 4000):
+        """
+        Finds an <input> element on LocoEquipmentsTreeAdd.aspx by known ID first,
+        then falls back to table label XPath matching.
+        """
+        id_map = {
+            "Provision Date": "#txtProvDate",
+            "Eq.Number": "#txtNumber",
+            "Location Eq.Number": "#txtNumber1",
+            "Local Eq.Number": "#txtNumber1",
+            "Date of Commission": "#txtDoC0",
+            "Date of Manufacture": "#txtDoM0",
+            "Date of Recieve": "#txtDoR0",
+            "Date of Receive": "#txtDoR0",
+            "Warranty Upto(If Avbl)": "#txtWarrenty0",
+            "AMC Upto (If Avbl)": "#txtAMCUpto0",
+            "Remarks": "#txtReamrks0",
+        }
+        if label_text in id_map:
+            loc_id = frame.locator(id_map[label_text]).first
+            try:
+                if loc_id.count() > 0:
+                    return loc_id
+            except Exception:
+                pass
+
+        xpath_table = f"xpath=//td[normalize-space(text())='{label_text}']/following-sibling::td[1]//input"
+        loc_table = frame.locator(xpath_table).first
+        try:
+            loc_table.wait_for(state="attached", timeout=timeout_ms)
+            return loc_table
+        except Exception:
+            pass
+
+        xpath_generic = f"xpath=//*[normalize-space(text())='{label_text}']/following::input[1]"
+        loc_generic = frame.locator(xpath_generic).first
+        loc_generic.wait_for(state="attached", timeout=timeout_ms)
+        return loc_generic
+
+    def _find_eq_select_by_label(self, frame, label_text: str, timeout_ms: int = 4000):
+        """
+        Finds a <select> element on LocoEquipmentsTreeAdd.aspx by known ID first,
+        then falls back to table label XPath matching.
+        """
+        id_map = {
+            "Schedule": "#ddlSchedule",
+            "Model": "#ddlModel",
+            "Warranty": "#ddlWarranty0",
+            "AMC": "#ddlAMC0",
+            "Eq.Make": "#ddlMake",
+        }
+        if label_text in id_map:
+            loc_id = frame.locator(id_map[label_text]).first
+            try:
+                if loc_id.count() > 0:
+                    return loc_id
+            except Exception:
+                pass
+
+        xpath_table = f"xpath=//td[normalize-space(text())='{label_text}']/following-sibling::td[1]//select"
+        loc_table = frame.locator(xpath_table).first
+        try:
+            loc_table.wait_for(state="attached", timeout=timeout_ms)
+            return loc_table
+        except Exception:
+            pass
+
+        xpath_generic = f"xpath=//*[normalize-space(text())='{label_text}']/following::select[1]"
+        loc_generic = frame.locator(xpath_generic).first
+        loc_generic.wait_for(state="attached", timeout=timeout_ms)
+        return loc_generic
+
+    def _set_eq_text(self, frame, label_text: str, value: str, wait_enabled: bool = False):
+        """
+        Sets a text or date field in the Add Loco Equipment popup form.
+        Automatically removes 'readonly' attribute via JS for SLAM calendar date fields.
+        """
+        from excel_parser import is_blank_eq_value
+        if is_blank_eq_value(value):
+            return
+        val_str = str(value).strip()
+        try:
+            field = self._find_eq_input_by_label(frame, label_text)
+            if wait_enabled:
+                for _ in range(10):
+                    try:
+                        if field.is_enabled():
+                            break
+                    except Exception:
+                        pass
+                    time.sleep(0.4)
+
+            if not field.is_enabled():
+                self.log(f"    [SKIP] '{label_text}' is disabled, skipping.")
+                return
+
+            is_ro = False
+            try:
+                is_ro = field.evaluate("el => el.readOnly || el.hasAttribute('readonly')")
+            except Exception:
+                pass
+
+            if not is_ro:
+                try:
+                    field.fill(val_str, timeout=3000)
+                    self.log(f"    [text] {label_text} = {val_str}")
+                    return
+                except Exception:
+                    pass
+
+            # Readonly date field or fill fallback: set via JS and dispatch input/change/blur events
+            field.evaluate(
+                """(el, v) => {
+                    el.removeAttribute('readonly');
+                    el.readOnly = false;
+                    el.value = v;
+                    el.dispatchEvent(new Event('input', {bubbles: true}));
+                    el.dispatchEvent(new Event('change', {bubbles: true}));
+                    el.dispatchEvent(new Event('blur', {bubbles: true}));
+                }""",
+                val_str
+            )
+            self.log(f"    [text-js] {label_text} = {val_str}")
+        except Exception as e:
+            self.log(f"    [SKIP] Field '{label_text}' could not be set: {e}")
+
+    def _set_eq_dropdown(self, frame, label_text: str, value: str):
+        """
+        Selects an option in a <select> dropdown by:
+        1) Exact visible text match
+        2) Case-insensitive match (e.g. 'VIKRANT' vs 'Vikrant', 'FLORICON' vs 'Floricon')
+        3) Alias / Punctuation-insensitive match (e.g. 'FE' -> 'FLORICON', 'BG' -> 'B G IND.')
+        4) O/0 lookalike normalization (e.g. 'ICO' vs 'IC0')
+        """
+        from excel_parser import is_blank_eq_value, normalize_make_alias
+        if is_blank_eq_value(value):
+            return
+        raw_val = str(value).strip()
+        val_str = normalize_make_alias(raw_val) if label_text == "Eq.Make" else raw_val
+        if not val_str:
+            return
+        try:
+            dropdown = self._find_eq_select_by_label(frame, label_text)
+            options = dropdown.evaluate(
+                "el => Array.from(el.options).map(o => ({value: o.value, text: o.text.trim()}))"
+            )
+
+            # 1) Exact match
+            for opt in options:
+                if opt["text"] == val_str:
+                    dropdown.select_option(value=opt["value"])
+                    self.log(f"    [dropdown] {label_text} = {opt['text']}")
+                    return
+
+            # 2) Case-insensitive match
+            for opt in options:
+                if opt["text"].upper() == val_str.upper():
+                    dropdown.select_option(value=opt["value"])
+                    self.log(f"    [dropdown] {label_text} = {opt['text']} (matched '{raw_val}')")
+                    return
+
+            # 3) Punctuation/space-insensitive match (e.g. 'BG IND' <-> 'B G IND.')
+            val_alnum = re.sub(r"[^A-Z0-9]", "", val_str.upper())
+            if val_alnum:
+                for opt in options:
+                    opt_alnum = re.sub(r"[^A-Z0-9]", "", opt["text"].upper())
+                    if opt_alnum == val_alnum or (len(val_alnum) >= 2 and opt_alnum.startswith(val_alnum)):
+                        dropdown.select_option(value=opt["value"])
+                        self.log(f"    [dropdown] {label_text} = {opt['text']} (alias-matched '{raw_val}')")
+                        return
+
+            # 4) Lookalike O/0 normalization (e.g. ICO <-> IC0)
+            target_norm = val_str.upper().replace("O", "0")
+            for opt in options:
+                if opt["text"].upper().replace("O", "0") == target_norm:
+                    dropdown.select_option(value=opt["value"])
+                    self.log(f"    [dropdown] {label_text} = {opt['text']} (O/0 matched '{raw_val}')")
+                    return
+
+            avail = [o["text"] for o in options]
+            self.log(f"    [WARN] Option '{raw_val}' (resolved '{val_str}') not found in '{label_text}'. Available: {avail}")
+        except Exception as e:
+            self.log(f"    [SKIP] Dropdown '{label_text}' issue: {e}")
+
+    def _fill_equipment_popup_form(self, popup_page: Page, frame, row: Dict[str, Any], auto_save: bool = True) -> bool:
+        """Fills all fields inside the LocoEquipmentsTreeAdd.aspx popup window for a single locomotive equipment item."""
+        from excel_parser import is_blank_eq_value
+
+        self._set_eq_text(frame, "Provision Date", row.get("provision_date", ""))
+        self._set_eq_dropdown(frame, "Schedule", row.get("schedule", ""))
+        # Wait briefly in case Schedule selection triggers a postback
+        time.sleep(1.0)
+        try:
+            popup_page.wait_for_load_state("domcontentloaded", timeout=5000)
+        except Exception:
+            pass
+
+        frame = self._find_frame_containing_text(popup_page, "Provision Date", max_wait=5.0) or popup_page.main_frame
+
+        self._set_eq_dropdown(frame, "Model", row.get("model", ""))
+        self._set_eq_text(frame, "Eq.Number", row.get("eq_number", ""))
+        self._set_eq_text(frame, "Local Eq.Number", row.get("loc_eq_number", ""))
+        self._set_eq_text(frame, "Date of Commission", row.get("doc", ""))
+        self._set_eq_text(frame, "Date of Manufacture", row.get("dom", ""))
+        self._set_eq_text(frame, "Date of Recieve", row.get("receive_date", ""))
+
+        warranty_val = str(row.get("warranty", "")).strip()
+        self._set_eq_dropdown(frame, "Warranty", warranty_val)
+        if not is_blank_eq_value(warranty_val) and warranty_val.upper() == "YES":
+            time.sleep(0.5)
+            self._set_eq_text(frame, "Warranty Upto(If Avbl)", row.get("warranty_upto", ""), wait_enabled=True)
+
+        amc_val = str(row.get("amc", "")).strip()
+        self._set_eq_dropdown(frame, "AMC", amc_val)
+        if not is_blank_eq_value(amc_val) and amc_val.upper() == "YES":
+            time.sleep(0.5)
+            self._set_eq_text(frame, "AMC Upto (If Avbl)", row.get("amc_upto", ""), wait_enabled=True)
+
+        self._set_eq_dropdown(frame, "Eq.Make", row.get("make", ""))
+        self._set_eq_text(frame, "Remarks", row.get("remarks", ""))
+
+        if auto_save:
+            try:
+                save_btn = frame.locator("#btnSave, input[value='Save']").first
+                save_btn.wait_for(state="visible", timeout=8000)
+                save_btn.click()
+                time.sleep(1.8)
+                self.log("    [SAVE] Equipment form saved successfully.")
+                return True
+            except Exception as e:
+                self.log(f"    [ERROR] Could not click Save button: {e}")
+                return False
+        else:
+            self.log("    [STAGED / DRY-RUN] Auto-Save is OFF — popup form filled without clicking Save.")
+            time.sleep(1.0)
+            return True
+
+    def process_single_loco_equipment(
+        self,
+        loco_no: str,
+        equipment_rows: List[Dict[str, Any]],
+        select_for: str = "Home",
+        auto_save: bool = True,
+        close_popup_on_dry_run: bool = True
+    ) -> Dict[str, Any]:
+        """Processes all pending equipment links on LocoEquipmentAdd.aspx for a single locomotive."""
+        from excel_parser import find_matching_equipment_row, is_blank_eq_value
+
+        loco_no = str(loco_no).strip()
+        self.log(f"\n=== Processing Loco {loco_no} Equipment ===")
+        self.safe_goto(config.EQUIPMENT_ADD_URL)
+        time.sleep(1.2)
+
+        frame = self._find_frame_containing_text(self.page, "Loco", max_wait=10.0)
+        if frame is None:
+            self.log(f"[WARN] Could not locate 'Loco' selector on {config.EQUIPMENT_ADD_URL}.")
+            return {"loco_no": loco_no, "filled": 0, "saved": 0, "skipped": 0, "failed": 1, "status": "page_error"}
+
+        # 1. Select 'Home' (or requested Select For) if not already selected
+        try:
+            shed_dd = frame.locator("#Content1_ddlLocoShed")
+            if shed_dd.count() > 0:
+                curr_shed = shed_dd.evaluate("el => el.options[el.selectedIndex] ? el.options[el.selectedIndex].text.trim() : ''")
+                if curr_shed.lower() != select_for.lower():
+                    shed_dd.select_option(label=select_for)
+                    self.page.wait_for_load_state("domcontentloaded", timeout=10000)
+                    time.sleep(1.2)
+                    frame = self._find_frame_containing_text(self.page, "Loco", max_wait=5.0) or self.page.main_frame
+        except Exception as e:
+            self.log(f"  [Note] Select For ('{select_for}') selection note: {e}")
+
+        # 2. Select Locomotive in #Content1_ddlLoco
+        try:
+            loco_dd = frame.locator("#Content1_ddlLoco")
+            loco_dd.wait_for(state="visible", timeout=10000)
+            has_loco = loco_dd.evaluate(
+                "(el, lno) => Array.from(el.options).some(o => o.text.trim() === lno)",
+                loco_no
+            )
+            if not has_loco:
+                self.log(f"[SKIP] Loco {loco_no} is not listed in the '{select_for}' dropdown on SLAM.")
+                return {"loco_no": loco_no, "filled": 0, "saved": 0, "skipped": 1, "failed": 0, "status": "loco_not_in_dropdown"}
+
+            loco_dd.select_option(label=loco_no)
+            self.page.wait_for_load_state("domcontentloaded", timeout=10000)
+            time.sleep(1.0)
+            frame = self._find_frame_containing_text(self.page, "Loco", max_wait=5.0) or self.page.main_frame
+        except Exception as e:
+            self.log(f"[ERROR] Failed to select Loco {loco_no}: {e}")
+            return {"loco_no": loco_no, "filled": 0, "saved": 0, "skipped": 0, "failed": 1, "status": "select_error"}
+
+        # 3. Click Go button (#Content1_btnGo)
+        try:
+            go_btn = frame.locator("#Content1_btnGo, input[value='Go'], input[value='GO']").first
+            if go_btn.count() > 0:
+                go_btn.click()
+                self.page.wait_for_load_state("domcontentloaded", timeout=10000)
+                time.sleep(1.5)
+                frame = self._find_frame_containing_text(self.page, "Loco", max_wait=5.0) or self.page.main_frame
+        except Exception as e:
+            self.log(f"[ERROR] Failed to click Go for Loco {loco_no}: {e}")
+            return {"loco_no": loco_no, "filled": 0, "saved": 0, "skipped": 0, "failed": 1, "status": "go_error"}
+
+        # 4. Inspect #Content1_gvEquipment for already-fitted rows and pending clickable equipment links
+        try:
+            already_fitted = frame.locator("#Content1_gvEquipment span[id*='lblEquipname']").evaluate_all(
+                """els => els.map(el => {
+                    const tr = el.closest('tr');
+                    const posEl = tr ? tr.querySelector("span[id*='lblPos']") : null;
+                    return {name: el.innerText.trim(), pos: posEl ? posEl.innerText.trim() : ''};
+                })"""
+            )
+            for af in already_fitted:
+                self.log(f"  [ALREADY FITTED] {af.get('name')} (Pos {af.get('pos')}) is already fitted on Loco {loco_no}.")
+        except Exception:
+            already_fitted = []
+
+        link_selector = "#Content1_gvEquipment a[id*='lnkEq'], #Content1_gvEquipment a[onclick*='popup'], a:has-text('Filter for')"
+        links_loc = frame.locator(link_selector)
+        total_links = links_loc.count()
+        self.log(f"[INFO] Found {total_links} pending unfilled equipment slot(s) and {len(already_fitted)} already-fitted slot(s) for Loco {loco_no}.")
+
+        if total_links == 0:
+            return {
+                "loco_no": loco_no,
+                "filled": 0,
+                "saved": 0,
+                "skipped": len(already_fitted) or 1,
+                "failed": 0,
+                "status": "no_pending_links"
+            }
+
+        handled_keys = set()
+        filled_count = 0
+        saved_count = 0
+        skipped_count = len(already_fitted)
+        failed_count = 0
+        max_iterations = total_links + 5
+
+        for _ in range(max_iterations):
+            if self._stop_requested:
+                break
+
+            frame = self._find_frame_containing_text(self.page, "Loco", max_wait=5.0) or self.page.main_frame
+            links_loc = frame.locator(link_selector)
+            curr_count = links_loc.count()
+            if curr_count == 0:
+                break
+
+            chosen_idx = None
+            raw_eq_text = ""
+            eq_name = ""
+            position = ""
+
+            for i in range(curr_count):
+                try:
+                    info = links_loc.nth(i).evaluate(
+                        """el => {
+                            const tr = el.closest('tr');
+                            const posSpan = tr ? tr.querySelector("span[id*='lblPos']") : null;
+                            let pos = posSpan ? posSpan.innerText.trim() : '';
+                            if (!pos && tr) {
+                                const cells = Array.from(tr.querySelectorAll('td')).map(td => td.innerText.trim());
+                                if (cells.length > 3) pos = cells[3];
+                            }
+                            return {
+                                id: el.id || '',
+                                text: el.innerText.trim(),
+                                pos: pos
+                            };
+                        }"""
+                    )
+                    raw_link_txt = info.get("text", "")
+                    cand_eq = re.sub(r"^Filter\s+for\s+", "", raw_link_txt, flags=re.IGNORECASE).strip()
+                    cand_eq = re.sub(r"\s*\(.*?\)\s*$", "", cand_eq).strip().upper()
+                    cand_pos = str(info.get("pos", "")).strip()
+                except Exception:
+                    continue
+
+                if (cand_eq, cand_pos) not in handled_keys:
+                    chosen_idx = i
+                    raw_eq_text = raw_link_txt
+                    eq_name = cand_eq
+                    position = cand_pos
+                    break
+
+            if chosen_idx is None:
+                break
+
+            handled_keys.add((eq_name, position))
+            self.log(f"  -> Pending Slot: '{raw_eq_text}' (Normalized: {eq_name}), Position: {position}")
+
+            sheet_row = find_matching_equipment_row(equipment_rows, loco_no, eq_name, position)
+            if sheet_row is None:
+                sheet_row = find_matching_equipment_row(equipment_rows, loco_no, raw_eq_text, position)
+            if sheet_row is None:
+                self.log(f"    [SKIP] No matching row in loaded table for Loco {loco_no} | {raw_eq_text} Pos {position}.")
+                skipped_count += 1
+                continue
+
+            if is_blank_eq_value(sheet_row.get("make", "")) and is_blank_eq_value(sheet_row.get("eq_number", "")):
+                self.log(f"    [SKIP] Both Make and Eq.Number are blank in table for Loco {loco_no} | {raw_eq_text} Pos {position}.")
+                skipped_count += 1
+                continue
+
+            # Click link and capture newly opened popup window (LocoEquipmentsTreeAdd.aspx)
+            popup_page: Optional[Page] = None
+            try:
+                with self.context.expect_page(timeout=20000) as new_page_info:
+                    links_loc.nth(chosen_idx).click()
+                popup_page = new_page_info.value
+                popup_page.set_default_timeout(20000)
+                popup_page.on("dialog", self._handle_dialog)
+                popup_page.wait_for_load_state("domcontentloaded", timeout=15000)
+                time.sleep(1.0)
+            except Exception as e:
+                self.log(f"    [ERROR] Failed to open popup window for {raw_eq_text} Pos {position}: {e}")
+                failed_count += 1
+                continue
+
+            try:
+                # Click 'Go' (#btnGo) for Available Type: New
+                form_frame = None
+                for attempt in (1, 2):
+                    avail_frame = self._find_frame_containing_text(popup_page, "Available Type", max_wait=6.0) or popup_page.main_frame
+                    try:
+                        go_avail = avail_frame.locator("#btnGo, input[value='Go'], input[value='GO']").first
+                        if go_avail.count() > 0:
+                            go_avail.click()
+                            self.log("    [INFO] Clicked 'Go' (Available Type: New) in popup window.")
+                            time.sleep(1.5)
+                    except Exception:
+                        pass
+
+                    form_frame = self._find_frame_containing_text(popup_page, "Provision Date", max_wait=6.0)
+                    if form_frame is not None:
+                        break
+                    self.log(f"    [WARN] Attempt {attempt}: Equipment form fields not loaded yet...")
+                    time.sleep(1.0)
+
+                if form_frame is None:
+                    self.log(f"    [ERROR] Form fields did not load for {raw_eq_text} Pos {position}. Skipping.")
+                    failed_count += 1
+                else:
+                    ok = self._fill_equipment_popup_form(popup_page, form_frame, sheet_row, auto_save=auto_save)
+                    if ok:
+                        filled_count += 1
+                        if auto_save:
+                            saved_count += 1
+                    else:
+                        failed_count += 1
+            except Exception as e:
+                self.log(f"    [ERROR] Error filling equipment form for {raw_eq_text} Pos {position}: {e}")
+                failed_count += 1
+            finally:
+                if auto_save or close_popup_on_dry_run:
+                    try:
+                        if popup_page and not popup_page.is_closed():
+                            popup_page.close()
+                    except Exception:
+                        pass
+                time.sleep(0.8)
+
+        self.log(f"=== Loco {loco_no} Complete (Filled: {filled_count}, Saved: {saved_count}, Skipped: {skipped_count}, Errors: {failed_count}) ===")
+        return {
+            "loco_no": loco_no,
+            "filled": filled_count,
+            "saved": saved_count,
+            "skipped": skipped_count,
+            "failed": failed_count,
+            "status": "ok"
+        }
+
+    def process_loco_equipment(
+        self,
+        rows: Optional[List[Dict[str, Any]]] = None,
+        equipment_rows: Optional[List[Dict[str, Any]]] = None,
+        target_locos: Optional[List[str]] = None,
+        select_for: str = "Home",
+        auto_save: bool = True,
+        otp: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Batch processes locomotive equipment fitment across one or more locomotives.
+        """
+        from excel_parser import is_blank_eq_value
+
+        self._stop_requested = False
+        active_rows = rows if rows is not None else (equipment_rows or [])
+        if not active_rows:
+            raise ValueError("No equipment rows loaded!")
+
+        if not target_locos:
+            seen = set()
+            target_locos = []
+            for r in active_rows:
+                lno = str(r.get("loco_no", "")).strip()
+                if not is_blank_eq_value(lno) and lno not in seen:
+                    seen.add(lno)
+                    target_locos.append(lno)
+
+        total_locos = len(target_locos)
+        self.log("============================================================")
+        self.log(f"Starting Loco Equipment Auto-Fill for {total_locos} Locomotive(s)")
+        self.log(f"Select For: {select_for} | Auto-Save: {'YES' if auto_save else 'NO (Dry Run / Stage Only)'}")
+        self.log("============================================================")
+
+        if not self.is_logged_in:
+            if not self.login(otp=otp):
+                raise RuntimeError("Failed to authenticate to SLAM portal.")
+
+        total_filled = 0
+        total_saved = 0
+        total_skipped = 0
+        total_failed = 0
+        per_loco_results = []
+
+        for idx, loco_no in enumerate(target_locos, start=1):
+            if self._stop_requested:
+                self.log("Equipment automation stopped by user.")
+                break
+
+            if self.progress_callback:
+                self.progress_callback(idx - 1, total_locos, f"Processing Loco {loco_no} ({idx}/{total_locos})...")
+
+            try:
+                res = self.process_single_loco_equipment(
+                    loco_no=loco_no,
+                    equipment_rows=active_rows,
+                    select_for=select_for,
+                    auto_save=auto_save
+                )
+                total_filled += res.get("filled", 0)
+                total_saved += res.get("saved", 0)
+                total_skipped += res.get("skipped", 0)
+                total_failed += res.get("failed", 0)
+                per_loco_results.append(res)
+            except Exception as e:
+                self.log(f"[ERROR] Loco {loco_no} encountered an error: {e}")
+                total_failed += 1
+                per_loco_results.append({"loco_no": loco_no, "filled": 0, "saved": 0, "skipped": 0, "failed": 1, "status": f"error: {e}"})
+
+            if self.progress_callback:
+                self.progress_callback(idx, total_locos, f"Completed Loco {loco_no} ({idx}/{total_locos})")
+
+        status = "cancelled" if self._stop_requested else "completed"
+        self.log(
+            f"\nEquipment Auto-Fill {status.upper()}: Locos={len(per_loco_results)}/{total_locos}, "
+            f"Filled={total_filled}, Saved={total_saved}, Skipped={total_skipped}, Errors={total_failed}"
+        )
+        return {
+            "status": status,
+            "total_locos": total_locos,
+            "locos_processed": len(per_loco_results),
+            "processed_locos": len(per_loco_results),
+            "filled": total_filled,
+            "saved": total_saved,
+            "total_saved": total_saved,
+            "skipped": total_skipped,
+            "total_skipped": total_skipped,
+            "failed": total_failed,
+            "results": per_loco_results,
+        }
+
     def close(self):
         """Closes browser and cleans up Playwright resources."""
         self.log("Closing browser session...")
@@ -770,3 +1409,4 @@ class SLAMBot:
             self.playwright = None
         self.is_logged_in = False
         self.log("Browser closed.")
+

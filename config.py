@@ -7,7 +7,7 @@ import json
 from datetime import datetime
 
 # Application Version & GitHub Releases
-APP_VERSION = "1.0.9"
+APP_VERSION = "1.1.0"
 GITHUB_REPO = "Redpheonix024/slamautofillbot"
 GITHUB_RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
@@ -15,6 +15,34 @@ GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 BASE_URL = "https://slam.indianrail.gov.in/SLAM"
 LOGIN_URL = f"{BASE_URL}/Login.aspx"
 JOBCARD_CREATE_URL = f"{BASE_URL}/JobSchedules/JobcardCreate.aspx"
+EQUIPMENT_ADD_URL = f"{BASE_URL}/EquipmentRegister/LocoEquipmentAdd.aspx"
+
+# Loco Equipment Default Google Sheet Settings
+DEFAULT_EQ_SHEET_ID = "1hzj67LKBl15xVTc7E43APChoSzMZfNAB"
+DEFAULT_EQ_SHEET_GID = "1093714984"
+
+# SLAM Shop Floor Sub-Menu Mapping (parentSubMenu21_SubMenuID92..112)
+SHOPFLOOR_MODULES = {
+    "Add Loco Eq./Eq. Fitment": "parentSubMenu21_SubMenuID93",
+    "Update Loco Equipment": "parentSubMenu5_SubMenuID19",
+    "Add Equipment History": "parentSubMenu21_SubMenuID92",
+    "Equipment Register": "parentSubMenu21_SubMenuID99",
+    "Loco Inventory": "parentSubMenu21_SubMenuID106",
+    "Loco Inventory Tree": "parentSubMenu21_SubMenuID107",
+    "Section Loco Inventory": "parentSubMenu21_SubMenuID111",
+    "Equipment History": "parentSubMenu21_SubMenuID98",
+    "Equipment Change Register": "parentSubMenu21_SubMenuID96",
+    "Equipment Failure Register": "parentSubMenu21_SubMenuID97",
+    "Equipment Removal (bulk)": "parentSubMenu21_SubMenuID100",
+    "Equipment Warranty": "parentSubMenu21_SubMenuID103",
+    "Find Equipment/Equipment Transfer": "parentSubMenu21_SubMenuID105",
+    "Attention Paid On Loco": "parentSubMenu21_SubMenuID94",
+    "Minor Equipment Repair": "parentSubMenu21_SubMenuID108",
+    "Repair Sheets/Eq.overhaul": "parentSubMenu21_SubMenuID110",
+    "Repair Sheet History": "parentSubMenu21_SubMenuID109",
+    "Unit Exchange Spares": "parentSubMenu21_SubMenuID112",
+    "Cracks Register": "parentSubMenu21_SubMenuID95",
+}
 
 def get_settings_file_path() -> str:
     """

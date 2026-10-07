@@ -8,14 +8,14 @@ import shutil
 import subprocess
 import zipfile
 
-def build():
+def build(exe_base_name: str = "SLAM_Auto_Filler_v1.1_Equipment"):
     base_dir = os.path.dirname(os.path.abspath(__file__))
     dist_dir = os.path.join(base_dir, "dist")
-    build_dir = os.path.join(base_dir, "build")
-    spec_file = os.path.join(base_dir, "SLAM_Auto_Filler.spec")
+    build_dir = os.path.join(base_dir, "build_v1_1")
+    spec_file = os.path.join(base_dir, f"{exe_base_name}.spec")
 
     print("=" * 60)
-    print("SLAM Jobcard Auto-Filler - Executable Builder")
+    print(f"SLAM Auto-Filler ({exe_base_name}) - Executable Builder")
     print("=" * 60)
 
     # Clean old build artifacts if present
@@ -41,7 +41,8 @@ def build():
         "-m",
         "PyInstaller",
         entry_point,
-        "--name=SLAM_Auto_Filler",
+        f"--name={exe_base_name}",
+        f"--workpath={build_dir}",
         "--onefile",
         "--windowed",
         "--clean",
@@ -72,9 +73,9 @@ def build():
         print("\n[ERROR] Build failed! Check PyInstaller errors above.")
         sys.exit(ret.returncode)
 
-    exe_path = os.path.join(dist_dir, "SLAM_Auto_Filler.exe")
+    exe_path = os.path.join(dist_dir, f"{exe_base_name}.exe")
     if os.path.exists(exe_path):
-        root_exe = os.path.join(base_dir, "SLAM_Auto_Filler.exe")
+        root_exe = os.path.join(base_dir, f"{exe_base_name}.exe")
         try:
             shutil.copy2(exe_path, root_exe)
             print(f"Copied to project root: {root_exe}")
@@ -84,7 +85,8 @@ def build():
         size_mb = os.path.getsize(exe_path) / (1024 * 1024)
         print("\n" + "=" * 60)
         print("BUILD SUCCESSFUL!")
-        print(f"Executable: {exe_path}")
+        print(f"Branched Executable: {root_exe}")
+        print(f"Original SLAM_Auto_Filler.exe was left UNTOUCHED.")
         print(f"Size: {size_mb:.2f} MB")
         print("=" * 60)
     else:
