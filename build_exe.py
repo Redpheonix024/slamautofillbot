@@ -79,6 +79,19 @@ def build(exe_base_name: str = "SLAM_Auto_Filler_v1.1_Equipment"):
         try:
             shutil.copy2(exe_path, root_exe)
             print(f"Copied to project root: {root_exe}")
+        except PermissionError:
+            old_exe = root_exe + ".old"
+            try:
+                if os.path.exists(old_exe):
+                    os.remove(old_exe)
+            except Exception:
+                old_exe = root_exe + f".old.{os.getpid()}"
+            try:
+                os.replace(root_exe, old_exe)
+                shutil.copy2(exe_path, root_exe)
+                print(f"Replaced running executable in project root: {root_exe} (previous instance renamed to {os.path.basename(old_exe)})")
+            except Exception as e2:
+                print(f"Warning: Could not copy to root: {e2}")
         except Exception as e:
             print(f"Warning: Could not copy to root: {e}")
 

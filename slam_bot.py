@@ -1187,6 +1187,12 @@ class SLAMBot:
         self.log(f"[INFO] Found {total_links} pending unfilled equipment slot(s) and {len(already_fitted)} already-fitted slot(s) for Loco {loco_no}.")
 
         if total_links == 0:
+            if len(already_fitted) == 0:
+                try:
+                    ltype = frame.locator("#Content1_lblType").inner_text().strip()
+                except Exception:
+                    ltype = "Unknown"
+                self.log(f"  [SKIP] SLAM returned 'No Records Found...' for Loco {loco_no} (Type: {ltype} has no equipment slots assigned to this section in SLAM).")
             return {
                 "loco_no": loco_no,
                 "filled": 0,

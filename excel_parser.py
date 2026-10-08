@@ -852,6 +852,18 @@ def parse_equipment_excel(file_path: str, sheet_name: Optional[str] = None) -> D
                 loco_set.add(lno)
                 locos.append(lno)
 
+    # Guard against Excel drag-fill on the 'position' column (e.g. 1..4 on first loco, 5..8 on second loco, etc.)
+    from collections import defaultdict
+    grouped_by_loco_eq = defaultdict(list)
+    for r_item in rows:
+        grouped_by_loco_eq[(r_item["loco_no"], r_item["eq_name"])].append(r_item)
+    for (_, _), grp in grouped_by_loco_eq.items():
+        if len(grp) >= 2:
+            pos_ints = [int(x["position"]) for x in grp if str(x.get("position", "")).isdigit()]
+            if pos_ints and (max(pos_ints) > 6 or (min(pos_ints) > 1 and len(pos_ints) == len(grp))):
+                for idx_in_grp, r_item in enumerate(grp, start=1):
+                    r_item["position"] = str(idx_in_grp)
+
     return {
         "source": file_path,
         "file_name": filename,
@@ -1034,6 +1046,7 @@ def find_matching_equipment_row(
     target_eq = str(eq_name).upper().strip()
     target_pos = str(position).strip().lstrip("0") or str(position).strip()
 
+    compatible_for_loco = []
     for r in rows:
         if str(r.get("loco_no", "")).strip() != target_loco:
             continue
@@ -1042,6 +1055,7 @@ def find_matching_equipment_row(
         r_pos = str(r.get("position", "")).strip().lstrip("0") or str(r.get("position", "")).strip()
 
         if _equipment_names_compatible(target_eq, r_eq, r_raw):
+            compatible_for_loco.append(r)
             if r_pos == target_pos or not target_pos or not r_pos:
                 return r
 
@@ -1049,6 +1063,13 @@ def find_matching_equipment_row(
             m = re.match(r"^([A-Z\s]+?)\s*0*(\d+)$", cand)
             if m and _equipment_names_compatible(target_eq, m.group(1), cand) and m.group(2) == target_pos:
                 return r
+
+    # Fallback: if positions in the sheet were drag-filled (e.g. 5, 6, 7, 8 instead of 1, 2, 3, 4),
+    # match the N-th compatible row for this locomotive
+    if compatible_for_loco and target_pos.isdigit():
+        idx = int(target_pos) - 1
+        if 0 <= idx < len(compatible_for_loco):
+            return compatible_for_loco[idx]
 
     return None
 
