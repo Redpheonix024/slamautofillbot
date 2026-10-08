@@ -257,23 +257,34 @@ class SLAMBot:
         pwd_input = self.page.locator("#ContentPlaceHolder1_txtPassword")
         pwd_input.fill(self.password)
 
-        # Solve CAPTCHA
-        cap_el = self.page.locator("#ContentPlaceHolder1_captchaEquation")
-        if cap_el.count() > 0 and cap_el.first.is_visible():
-            cap_text = cap_el.first.inner_text().strip()
-            answer = self._solve_captcha(cap_text)
-            self.log(f"CAPTCHA: '{cap_text}' -> Solved: '{answer}'")
-            self.page.locator("#ContentPlaceHolder1_txtCaptcha").fill(answer)
-
-        # Click Get OTP
-        self.log("Clicking 'Get OTP' button...")
-        get_otp_btn = self.page.locator("#ContentPlaceHolder1_BtnGetOtp")
-        get_otp_btn.click()
-
-        # Wait for OTP field to appear
+        # Solve CAPTCHA & Click Get OTP (with automatic retry if SLAM SMS gateway is slow)
         otp_input = self.page.locator("#ContentPlaceHolder1_txtOTP")
-        otp_input.wait_for(state="visible", timeout=15000)
-        self.log("OTP requested successfully!")
+        for otp_attempt in (1, 2):
+            if otp_attempt > 1:
+                self.log("Retrying CAPTCHA & 'Get OTP' click...")
+                self.safe_goto(config.LOGIN_URL)
+                user_input.wait_for(state="visible", timeout=15000)
+                user_input.fill(self.username)
+                pwd_input.fill(self.password)
+
+            cap_el = self.page.locator("#ContentPlaceHolder1_captchaEquation")
+            if cap_el.count() > 0 and cap_el.first.is_visible():
+                cap_text = cap_el.first.inner_text().strip()
+                answer = self._solve_captcha(cap_text)
+                self.log(f"CAPTCHA: '{cap_text}' -> Solved: '{answer}'")
+                self.page.locator("#ContentPlaceHolder1_txtCaptcha").fill(answer)
+
+            self.log("Clicking 'Get OTP' button...")
+            get_otp_btn = self.page.locator("#ContentPlaceHolder1_BtnGetOtp")
+            get_otp_btn.click()
+
+            try:
+                otp_input.wait_for(state="visible", timeout=25000)
+                self.log("OTP requested successfully!")
+                break
+            except Exception:
+                if otp_attempt == 2:
+                    raise
 
         used_cached_otp = False
         if not otp:
@@ -1000,8 +1011,8 @@ class SLAMBot:
         except Exception as e:
             self.log(f"    [SKIP] Dropdown '{label_text}' issue: {e}")
 
-    def _fill_equipment_popup_form(self, popup_page: Page, frame, row: Dict[str, Any], auto_save: bool = True) -> bool:
-        """Fills all fields inside the LocoEquipmentsTreeAdd.aspx popup window for a single locomotive equipment item."""
+    def _populate_equipment_fields(self, popup_page: Page, frame, row: Dict[str, Any], eq_num_override: str = ""):
+        """Populates all inputs and dropdowns in the LocoEquipmentsTreeAdd.aspx popup form."""
         from excel_parser import is_blank_eq_value
 
         self._set_eq_text(frame, "Provision Date", row.get("provision_date", ""))
@@ -1015,9 +1026,12 @@ class SLAMBot:
 
         frame = self._find_frame_containing_text(popup_page, "Provision Date", max_wait=5.0) or popup_page.main_frame
 
+        eff_eq_num = eq_num_override or str(row.get("eq_number", "")).strip()
+        eff_loc_num = eq_num_override or str(row.get("loc_eq_number", "")).strip() or eff_eq_num
+
         self._set_eq_dropdown(frame, "Model", row.get("model", ""))
-        self._set_eq_text(frame, "Eq.Number", row.get("eq_number", ""))
-        self._set_eq_text(frame, "Local Eq.Number", row.get("loc_eq_number", ""))
+        self._set_eq_text(frame, "Eq.Number", eff_eq_num)
+        self._set_eq_text(frame, "Local Eq.Number", eff_loc_num)
         self._set_eq_text(frame, "Date of Commission", row.get("doc", ""))
         self._set_eq_text(frame, "Date of Manufacture", row.get("dom", ""))
         self._set_eq_text(frame, "Date of Recieve", row.get("receive_date", ""))
@@ -1036,6 +1050,11 @@ class SLAMBot:
 
         self._set_eq_dropdown(frame, "Eq.Make", row.get("make", ""))
         self._set_eq_text(frame, "Remarks", row.get("remarks", ""))
+        return frame
+
+    def _fill_equipment_popup_form(self, popup_page: Page, frame, row: Dict[str, Any], auto_save: bool = True) -> bool:
+        """Fills all fields inside the LocoEquipmentsTreeAdd.aspx popup window for a single locomotive equipment item."""
+        frame = self._populate_equipment_fields(popup_page, frame, row)
 
         if auto_save:
             try:
@@ -1043,6 +1062,35 @@ class SLAMBot:
                 save_btn.wait_for(state="visible", timeout=8000)
                 save_btn.click()
                 time.sleep(1.8)
+                try:
+                    popup_page.wait_for_load_state("domcontentloaded", timeout=5000)
+                except Exception:
+                    pass
+
+                # Check if SLAM rejected the serial number due to global uniqueness ('Equipment with Serial No X is already existed')
+                frame = self._find_frame_containing_text(popup_page, "Provision Date", max_wait=3.0) or popup_page.main_frame
+                try:
+                    body_txt = frame.locator("body").inner_text()
+                except Exception:
+                    body_txt = ""
+
+                if "already existed" in body_txt.lower():
+                    loco_no = str(row.get("loco_no", "")).strip()
+                    pos = str(row.get("position", "1")).strip() or "1"
+                    orig_eq_num = str(row.get("eq_number", "")).strip()
+                    unique_eq_num = f"{loco_no}-TM{pos}"
+                    if unique_eq_num.upper() == orig_eq_num.upper():
+                        unique_eq_num = f"{loco_no}-TM{pos}-{int(time.time()) % 1000}"
+                    self.log(
+                        f"    [AUTO-FIX] SLAM reported 'Serial No {orig_eq_num} already existed'. "
+                        f"Retrying with unique locomotive serial number '{unique_eq_num}'..."
+                    )
+                    frame = self._populate_equipment_fields(popup_page, frame, row, eq_num_override=unique_eq_num)
+                    save_btn = frame.locator("#btnSave, input[value='Save']").first
+                    save_btn.wait_for(state="visible", timeout=8000)
+                    save_btn.click()
+                    time.sleep(1.8)
+
                 self.log("    [SAVE] Equipment form saved successfully.")
                 return True
             except Exception as e:

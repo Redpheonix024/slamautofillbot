@@ -549,7 +549,7 @@ def _normalize_eq_dict_row(sno: int, raw_dict: Dict[str, Any], default_eq_name: 
 
     eq_num = format_excel_scalar(_get("eq. number (m)", "eq. number", "eq.number", "sr. no.", "sr no", "serial no", "slno", "sl.no."))
     if is_blank_eq_value(eq_num):
-        eq_num = pos_str or "1"
+        eq_num = f"{loco_no}-TM{pos_str}" if pos_str else f"{loco_no}-1"
 
     loc_eq_num = format_excel_scalar(_get("location eq. number", "eq. number (l)", "location eq.number", "loc eq. no"))
     if is_blank_eq_value(loc_eq_num):
@@ -722,8 +722,8 @@ def _parse_wide_tm_matrix_sheet(ws, sheet_title: str, header_row: int) -> Tuple[
                 "schedule": "IA",
                 "provision_date": eff_prov,
                 "model": model_val or "NA",
-                "eq_number": pos,
-                "loc_eq_number": pos,
+                "eq_number": f"{loco_no}-TM{pos}",
+                "loc_eq_number": f"{loco_no}-TM{pos}",
                 "doc": "09/09/2026",
                 "dom": "10/09/2026",
                 "receive_date": eff_prov,
