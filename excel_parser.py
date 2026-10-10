@@ -1025,6 +1025,13 @@ def _equipment_names_compatible(portal_eq_name: str, row_eq_name: str, row_eq_ra
         if code in p_clean and (r_base == code or code in r_name or code in r_raw):
             return True
 
+    # Roof equipment variations
+    roof_aliases = {"ROOF", "ROOF EQUIPMENT", "ROOF HATCH", "ROOF ASSEMBLY", "ROOF BUSHING", "FILTER FOR ROOF"}
+    if p_clean in roof_aliases and (r_name in roof_aliases or r_raw in roof_aliases or r_base in roof_aliases):
+        return True
+    if "ROOF" in p_clean and ("ROOF" in r_name or "ROOF" in r_raw or "ROOF" in r_base):
+        return True
+
     # Substring containment (e.g. 'SPEED SENSOR' in 'TM SPEED SENSOR')
     if r_base and len(r_base) >= 3 and (r_base in p_clean or p_clean in r_base):
         return True
