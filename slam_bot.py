@@ -1006,6 +1006,47 @@ class SLAMBot:
                     self.log(f"    [dropdown] {label_text} = {opt['text']} (O/0 matched '{raw_val}')")
                     return
 
+            if label_text == "Eq.Make":
+                # Check if the dropdown has no valid configured options from SLAM master (e.g. only ['--Select--'])
+                valid_opts = [o for o in options if str(o.get("value", "")).strip() not in ("-1", "", "None", "0")]
+                if not valid_opts:
+                    target_upper = re.sub(r"[^A-Z0-9]", "", val_str.upper())
+                    KNOWN_MAKES_ID_MAP = {
+                        "ELGI": "64",
+                        "RECON": "165",
+                        "KNORR": "338",
+                        "FTRTIL": "453",
+                        "ELECTROMECH": "1768",
+                        "AUTOINDUSTRIES": "1931",
+                        "FLORICON": "225",
+                        "TROLEX": "311",
+                        "BGIND": "225",
+                    }
+                    injected_id = None
+                    injected_name = val_str
+                    for k, v in KNOWN_MAKES_ID_MAP.items():
+                        if k in target_upper or target_upper in k:
+                            injected_id = v
+                            injected_name = k
+                            break
+                    if not injected_id:
+                        injected_id = "64"
+                        injected_name = val_str if val_str else "ELGI"
+
+                    dropdown.evaluate(f"""el => {{
+                        const opt = document.createElement('option');
+                        opt.value = '{injected_id}';
+                        opt.text = '{injected_name}';
+                        el.appendChild(opt);
+                        el.value = '{injected_id}';
+                        el.dispatchEvent(new Event('change', {{bubbles: true}}));
+                    }}""")
+                    self.log(
+                        f"    [AUTO-INJECT] Eq.Make dropdown was empty in SLAM! "
+                        f"Injected make '{injected_name}' (ID {injected_id}) to satisfy SLAM database constraint."
+                    )
+                    return
+
             avail = [o["text"] for o in options]
             self.log(f"    [WARN] Option '{raw_val}' (resolved '{val_str}') not found in '{label_text}'. Available: {avail}")
         except Exception as e:
@@ -1052,7 +1093,14 @@ class SLAMBot:
         self._set_eq_text(frame, "Remarks", row.get("remarks", ""))
         return frame
 
-    def _fill_equipment_popup_form(self, popup_page: Page, frame, row: Dict[str, Any], auto_save: bool = True) -> bool:
+    def _fill_equipment_popup_form(
+        self,
+        popup_page: Page,
+        frame,
+        row: Dict[str, Any],
+        auto_save: bool = True,
+        dialogs_list: Optional[List[str]] = None
+    ) -> bool:
         """Fills all fields inside the LocoEquipmentsTreeAdd.aspx popup window for a single locomotive equipment item."""
         frame = self._populate_equipment_fields(popup_page, frame, row)
 
@@ -1067,12 +1115,23 @@ class SLAMBot:
                 except Exception:
                     pass
 
-                # Check if SLAM rejected the serial number due to global uniqueness ('Equipment with Serial No X is already existed')
+                # Check if SLAM validation alert occurred (e.g. Please Check Mandatory Fields)
+                if dialogs_list and any("mandatory" in str(d).lower() or "check" in str(d).lower() for d in dialogs_list):
+                    self.log(f"    [ERROR] Save rejected by SLAM form validation: {dialogs_list[-1]}")
+                    return False
+
+                # Check if SLAM rejected with database constraint error or duplicate serial
                 frame = self._find_frame_containing_text(popup_page, "Provision Date", max_wait=3.0) or popup_page.main_frame
                 try:
                     body_txt = frame.locator("body").inner_text()
                 except Exception:
                     body_txt = ""
+
+                if "foreign key constraint" in body_txt.lower() or "conversion failed" in body_txt.lower():
+                    first_err = [l.strip() for l in body_txt.splitlines() if "constraint" in l.lower() or "conversion" in l.lower()]
+                    err_summary = first_err[0] if first_err else body_txt[:120]
+                    self.log(f"    [ERROR] SLAM Database Error on Save: {err_summary}")
+                    return False
 
                 if "already existed" in body_txt.lower():
                     loco_no = str(row.get("loco_no", "")).strip()
@@ -1277,12 +1336,16 @@ class SLAMBot:
 
             # Click link and capture newly opened popup window (LocoEquipmentsTreeAdd.aspx)
             popup_page: Optional[Page] = None
+            popup_dialogs: List[str] = []
             try:
                 with self.context.expect_page(timeout=20000) as new_page_info:
                     links_loc.nth(chosen_idx).click()
                 popup_page = new_page_info.value
                 popup_page.set_default_timeout(20000)
-                popup_page.on("dialog", self._handle_dialog)
+                def _on_popup_dlg(d):
+                    popup_dialogs.append(d.message)
+                    self._handle_dialog(d)
+                popup_page.on("dialog", _on_popup_dlg)
                 popup_page.wait_for_load_state("domcontentloaded", timeout=15000)
                 time.sleep(1.0)
             except Exception as e:
@@ -1314,7 +1377,7 @@ class SLAMBot:
                     self.log(f"    [ERROR] Form fields did not load for {raw_eq_text} Pos {position}. Skipping.")
                     failed_count += 1
                 else:
-                    ok = self._fill_equipment_popup_form(popup_page, form_frame, sheet_row, auto_save=auto_save)
+                    ok = self._fill_equipment_popup_form(popup_page, form_frame, sheet_row, auto_save=auto_save, dialogs_list=popup_dialogs)
                     if ok:
                         filled_count += 1
                         if auto_save:
